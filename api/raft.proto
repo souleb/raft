@@ -1,0 +1,49 @@
+syntax = "proto3";
+option go_package = "github.com/soulebt/raft";
+
+package api;
+
+import "google/protobuf/any.proto";
+
+
+// The raft Vote RPC
+service Vote {
+  // RequestVote is called by candidates to gather votes.
+  rpc RequestVote(VoteRequest) returns (VoteResponse) {}
+}
+
+// The raft RequestVote RPC arguments structure.
+message VoteRequest {
+  int64 term = 1;
+  int32 candidateId = 2;
+  int64 lastLogIndex = 3;
+  int64 lastLogTerm = 4;
+}
+
+
+// The raft RequestVote RPC response structure.
+message VoteResponse {
+  int64 term = 1;
+  bool voteGranted = 2;
+}
+
+// The raft AppendEntries RPC
+service AppendEntries {
+  // AppendEntries is invoked by leaders to replicate log entries and
+  // to send heartbeats.
+  rpc AppendEntries(AppendEntriesRequest) returns (AppendEntriesResponse) {}
+}
+
+message AppendEntriesRequest {
+  int64 term = 1;
+  int32 leaderId = 2;
+  int64 prevLogIndex = 3;
+  int64 prevLogTerm = 4;
+  repeated google.protobuf.Any entries = 5;
+  int64 leaderCommit = 6;
+}
+
+message AppendEntriesResponse {
+  int64 term = 1;
+  bool success = 2;
+}
