@@ -1,0 +1,20 @@
+syntax = "proto3";
+option go_package = "github.com/soulebt/raft";
+
+package api;
+
+// The ApplyEntry RPC.
+service ApplyEntry {
+  // RequestVote is called by candidates to gather votes.
+  rpc ApplyEntry(Entry) returns (ApplyResponse) {}
+}
+
+// The LogEntry to be applied.
+message Entry {
+  bytes command = 1;
+}
+
+// The Apply response structure.
+message ApplyResponse {
+  bool success = 1;
+}

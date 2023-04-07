@@ -3,8 +3,6 @@ option go_package = "github.com/soulebt/raft";
 
 package api;
 
-import "google/protobuf/any.proto";
-
 
 // The raft Vote RPC
 service Vote {
@@ -39,7 +37,7 @@ message AppendEntriesRequest {
   int32 leaderId = 2;
   int64 prevLogIndex = 3;
   int64 prevLogTerm = 4;
-  repeated google.protobuf.Any entries = 5;
+  bytes entries = 5;
   int64 leaderCommit = 6;
 }
 

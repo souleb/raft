@@ -32,14 +32,14 @@ func TestRaftNode(t *testing.T) {
 	nodes, err := makeNodes(ctx, 3, logger)
 	require.NoError(t, err)
 
-	stopChan := make(chan struct{})
-	for _, node := range nodes {
-		go func(node *RaftNode) {
-			err := makeServer(node, stopChan)
-			require.NoError(t, err)
-		}(node)
-	}
-	defer close(stopChan)
+	// stopChan := make(chan struct{})
+	// for _, node := range nodes {
+	// 	go func(node *RaftNode) {
+	// 		err := makeServer(node, stopChan)
+	// 		require.NoError(t, err)
+	// 	}(node)
+	// }
+	// defer close(stopChan)
 
 	// start the nodes
 	for _, node := range nodes {

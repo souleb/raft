@@ -4,8 +4,8 @@ import (
 	"sync"
 	"time"
 
-	pb "github.com/souleb/raft/api"
 	"github.com/souleb/raft/errors"
+	"github.com/souleb/raft/server"
 	"golang.org/x/exp/slog"
 	"golang.org/x/net/context"
 )
@@ -79,50 +79,50 @@ func (r *RaftNode) follower(ctx context.Context) stateFn {
 		case req := <-r.appendChan:
 			resetTimer(timer, randomWaitTime(min, max))
 
-			if req.msg.GetEntries() == nil {
+			if req.Entries == nil {
 				r.logger.Debug("received heartbeat", slog.Int("id", int(r.GetID())), slog.Int("currentTerm",
-					int(r.state.getCurrentTerm())), slog.Int("term", int(req.msg.GetTerm())), slog.String("state", "follower"))
+					int(r.state.getCurrentTerm())), slog.Int("term", int(req.Term)), slog.String("state", "follower"))
 			}
 
-			if req.msg.GetTerm() > r.state.getCurrentTerm() {
+			if req.Term > r.state.getCurrentTerm() {
 				r.logger.Debug("received request with newer term", slog.Int("id", int(r.GetID())),
-					slog.Int("currentTerm", int(r.state.getCurrentTerm())), slog.Int("term", int(req.msg.GetTerm())),
+					slog.Int("currentTerm", int(r.state.getCurrentTerm())), slog.Int("term", int(req.Term)),
 					slog.String("state", "follower"))
-				r.state.setCurrentTerm(req.msg.GetTerm())
+				r.state.setCurrentTerm(req.Term)
 				r.state.setVotedFor(-1)
 			}
 		case req := <-r.voteChan:
 			term := r.state.getCurrentTerm()
 			r.logger.Debug("received vote request", slog.Int("id", int(r.GetID())), slog.Int("currentTerm",
-				int(term)), slog.Int("term", int(req.msg.GetTerm())), slog.Int("candidateID",
-				int(req.msg.CandidateId)), slog.String("state", "follower"))
-			vote := &pb.VoteResponse{
-				Term:        term,
-				VoteGranted: false,
+				int(term)), slog.Int("term", int(req.Term)), slog.Int("candidateID",
+				int(req.CandidateId)), slog.String("state", "follower"))
+			vote := server.RPCResponse{
+				Term:     term,
+				Response: false,
 			}
-			if req.msg.GetTerm() > term {
+			if req.Term > term {
 				r.logger.Debug("received request with newer term", slog.Int("currentTerm", int(term)),
-					slog.Int("term", int(req.msg.GetTerm())), slog.Int("candidateID", int(req.msg.CandidateId)),
+					slog.Int("term", int(req.Term)), slog.Int("candidateID", int(req.CandidateId)),
 					slog.String("state", "follower"))
-				r.state.setCurrentTerm(req.msg.GetTerm())
+				r.state.setCurrentTerm(req.Term)
 				r.state.setVotedFor(-1)
 			}
 			votedFor := r.state.getVotedFor()
-			if votedFor == -1 || votedFor == req.msg.GetCandidateId() {
+			if votedFor == -1 || votedFor == req.CandidateId {
 				lastIndex := r.state.log.LastIndex()
 				lastTerm := r.state.log.LastTerm()
 
 				// if incoming request's log is at least as up-to-date as owned log, grant vote
-				if req.msg.GetLastLogTerm() > lastTerm || (req.msg.GetLastLogTerm() == lastTerm && req.msg.GetLastLogIndex() >= lastIndex) {
-					r.state.votedFor = req.msg.GetCandidateId()
-					vote.VoteGranted = true
+				if req.LastLogTerm > lastTerm || (req.LastLogTerm == lastTerm && req.LastLogIndex >= lastIndex) {
+					r.state.votedFor = req.CandidateId
+					vote.Response = true
 					resetTimer(timer, randomWaitTime(min, max))
 					r.logger.Debug("voted for candidate", slog.Int("currentTerm", int(r.state.getCurrentTerm())),
-						slog.Int("term", int(req.msg.GetTerm())), slog.Int("candidateID", int(req.msg.CandidateId)),
+						slog.Int("term", int(req.Term)), slog.Int("candidateID", int(req.CandidateId)),
 						slog.String("state", "follower"))
 				}
 			}
-			req.reply <- vote
+			req.ResponseChan <- vote
 		case <-timer.C:
 			r.logger.Debug("election timeout, transitionning to candidate", slog.Int("id", int(r.GetID())),
 				slog.Int("currentTerm", int(r.state.getCurrentTerm())))
@@ -135,7 +135,7 @@ func (r *RaftNode) follower(ctx context.Context) stateFn {
 func (r *RaftNode) candidate(ctx context.Context) stateFn {
 	r.logger.Debug("entering candidate state", slog.Int("id", int(r.GetID())),
 		slog.Int("currentTerm", int(r.state.getCurrentTerm())))
-	respChan := make(chan *rpcResponse, len(r.GetPeers())*2)
+	respChan := make(chan *server.RPCResponse, len(r.GetPeers())*2)
 	ctx, cancel := context.WithCancel(ctx)
 	wg := sync.WaitGroup{}
 
@@ -155,18 +155,18 @@ func (r *RaftNode) candidate(ctx context.Context) stateFn {
 			return nil
 		case vote := <-respChan:
 			r.logger.Debug("received vote", slog.Int("id", int(r.GetID())), slog.Int("currentTerm",
-				int(r.state.getCurrentTerm())), slog.Int("term", int(vote.term)), slog.Bool("vote", vote.response))
-			if vote.term > r.state.getCurrentTerm() {
+				int(r.state.getCurrentTerm())), slog.Int("term", int(vote.Term)), slog.Bool("vote", vote.Response))
+			if vote.Term > r.state.getCurrentTerm() {
 				if !timer.Stop() {
 					<-timer.C
 				}
-				r.prepareStateRevert(vote.term, cancel, &wg)
+				r.prepareStateRevert(vote.Term, cancel, &wg)
 				r.logger.Debug("received response with newer term", slog.Int("id", int(r.GetID())),
-					slog.Int("currentTerm", int(r.state.getCurrentTerm())), slog.Int("term", int(vote.term)),
+					slog.Int("currentTerm", int(r.state.getCurrentTerm())), slog.Int("term", int(vote.Term)),
 					slog.String("state", "candidate"))
 				return r.follower
 			}
-			if vote.response {
+			if vote.Response {
 				votes++
 			}
 			if votes > len(r.GetPeers())/2 {
@@ -180,27 +180,27 @@ func (r *RaftNode) candidate(ctx context.Context) stateFn {
 				int(r.state.getCurrentTerm())), slog.String("state", "candidate"))
 			timer, votes = r.startElection(ctx, &wg, respChan)
 		case resp := <-r.appendChan:
-			if resp.msg.GetTerm() >= r.state.getCurrentTerm() {
+			if resp.Term >= r.state.getCurrentTerm() {
 				if !timer.Stop() {
 					<-timer.C
 				}
-				r.prepareStateRevert(resp.msg.GetTerm(), cancel, &wg)
+				r.prepareStateRevert(resp.Term, cancel, &wg)
 				return r.follower
 			}
 		case req := <-r.voteChan:
 			r.logger.Debug("received vote request", slog.Int("currentTerm", int(r.state.getCurrentTerm())),
-				slog.Int("term", int(req.msg.GetTerm())), slog.String("state", "candidate"))
-			if req.msg.GetTerm() > r.state.getCurrentTerm() {
-				r.prepareStateRevert(req.msg.GetTerm(), cancel, &wg)
-				req.reply <- &pb.VoteResponse{Term: req.msg.GetTerm(), VoteGranted: false}
+				slog.Int("term", int(req.Term)), slog.String("state", "candidate"))
+			if req.Term > r.state.getCurrentTerm() {
+				r.prepareStateRevert(req.Term, cancel, &wg)
+				req.ResponseChan <- server.RPCResponse{Term: req.Term, Response: false}
 				return r.follower
 			}
-			req.reply <- &pb.VoteResponse{Term: req.msg.GetTerm(), VoteGranted: false}
+			req.ResponseChan <- server.RPCResponse{Term: req.Term, Response: false}
 		}
 	}
 }
 
-func (r *RaftNode) startElection(ctx context.Context, wg *sync.WaitGroup, respChan chan<- *rpcResponse) (*time.Timer, int) {
+func (r *RaftNode) startElection(ctx context.Context, wg *sync.WaitGroup, respChan chan<- *server.RPCResponse) (*time.Timer, int) {
 	r.logger.Debug("starting next election", slog.Int("id", int(r.GetID())),
 		slog.Int("currentTerm", int(r.state.getCurrentTerm())))
 	// increment current term
@@ -216,7 +216,7 @@ func (r *RaftNode) startElection(ctx context.Context, wg *sync.WaitGroup, respCh
 
 func (r *RaftNode) leader(ctx context.Context) stateFn {
 	r.logger.Debug("entering leader state", slog.Int("id", int(r.GetID())))
-	respChan := make(chan *rpcResponse)
+	respChan := make(chan *server.RPCResponse)
 	ctx, cancel := context.WithCancel(ctx)
 	wg := sync.WaitGroup{}
 	r.sendHearbeats(ctx, &wg, respChan)
@@ -229,31 +229,31 @@ func (r *RaftNode) leader(ctx context.Context) stateFn {
 			r.errChan <- nil
 			return nil
 		case resp := <-respChan:
-			if resp.term > r.state.getCurrentTerm() {
+			if resp.Term > r.state.getCurrentTerm() {
 				r.state.setLeader(false)
-				r.prepareStateRevert(resp.term, cancel, &wg)
+				r.prepareStateRevert(resp.Term, cancel, &wg)
 				return r.follower
 			}
 		case <-ticker.C:
 			r.sendHearbeats(ctx, &wg, respChan)
 			ticker.Reset(time.Duration(r.heartbeatTimeout) * time.Millisecond)
 		case resp := <-r.appendChan:
-			if resp.msg.GetTerm() > r.state.getCurrentTerm() {
+			if resp.Term > r.state.getCurrentTerm() {
 				r.state.setLeader(false)
-				r.prepareStateRevert(resp.msg.GetTerm(), cancel, &wg)
+				r.prepareStateRevert(resp.Term, cancel, &wg)
 				return r.follower
 			}
 		case req := <-r.voteChan:
-			if req.msg.GetTerm() > r.state.getCurrentTerm() {
+			if req.Term > r.state.getCurrentTerm() {
 				r.logger.Debug("received vote request with newer term, transitionnning to follower",
 					slog.Int("id", int(r.GetID())), slog.Int("currentTerm", int(r.state.getCurrentTerm())),
-					slog.Int("term", int(req.msg.GetTerm())), slog.String("state", "leader"))
+					slog.Int("term", int(req.Term)), slog.String("state", "leader"))
 				r.state.setLeader(false)
-				r.prepareStateRevert(req.msg.GetTerm(), cancel, &wg)
-				req.reply <- &pb.VoteResponse{Term: r.state.currentTerm, VoteGranted: false}
+				r.prepareStateRevert(req.Term, cancel, &wg)
+				req.ResponseChan <- server.RPCResponse{Term: r.state.getCurrentTerm(), Response: false}
 				return r.follower
 			}
-			req.reply <- &pb.VoteResponse{Term: req.msg.GetTerm(), VoteGranted: false}
+			req.ResponseChan <- server.RPCResponse{Term: req.Term, Response: false}
 		}
 	}
 }
@@ -267,7 +267,7 @@ func (r *RaftNode) prepareStateRevert(term int64, cancel context.CancelFunc, wg 
 	wg.Wait()
 }
 
-func (r *RaftNode) getVotes(ctx context.Context, wg *sync.WaitGroup, respChan chan<- *rpcResponse) {
+func (r *RaftNode) getVotes(ctx context.Context, wg *sync.WaitGroup, respChan chan<- *server.RPCResponse) {
 	r.logger.Debug("sending request vote", slog.Int("id", int(r.GetID())),
 		slog.Int("currentTerm", int(r.state.getCurrentTerm())))
 	var (
@@ -278,17 +278,17 @@ func (r *RaftNode) getVotes(ctx context.Context, wg *sync.WaitGroup, respChan ch
 		lastIndex = r.state.log.LastIndex()
 		lastLogTerm = r.state.log.LastTerm()
 	}
-	req := &pb.VoteRequest{
+	req := server.VoteRequest{
 		Term:         r.state.getCurrentTerm(),
 		CandidateId:  r.GetID(),
 		LastLogIndex: lastIndex,
 		LastLogTerm:  lastLogTerm,
 	}
 
-	for index := range r.GetPeersConn() {
+	for index := range r.GetPeers() {
 		wg.Add(1)
 		go func(index int) {
-			response, err := r.sendRequestVote(ctx, index, req)
+			response, err := r.RPCServer.SendRequestVote(ctx, index, req)
 			if err != nil {
 				if e, ok := err.(*errors.Error); !ok || e.StatusCode != errors.Canceled {
 					r.logger.Error("while sending requestVote rpc", slog.String("error", err.Error()))
@@ -302,7 +302,7 @@ func (r *RaftNode) getVotes(ctx context.Context, wg *sync.WaitGroup, respChan ch
 	}
 }
 
-func (r *RaftNode) sendHearbeats(ctx context.Context, wg *sync.WaitGroup, respChan chan *rpcResponse) {
+func (r *RaftNode) sendHearbeats(ctx context.Context, wg *sync.WaitGroup, respChan chan *server.RPCResponse) {
 	var (
 		lastIndex   int64 = 0
 		lastLogTerm int64 = 0
@@ -312,16 +312,16 @@ func (r *RaftNode) sendHearbeats(ctx context.Context, wg *sync.WaitGroup, respCh
 		lastLogTerm = r.state.log.LastTerm()
 	}
 
-	req := &pb.AppendEntriesRequest{
+	req := server.AppendEntries{
 		Term:         r.state.getCurrentTerm(),
 		LeaderId:     r.GetID(),
 		PrevLogIndex: lastIndex,
 		PrevLogTerm:  lastLogTerm,
 	}
-	for index := range r.GetPeersConn() {
+	for index := range r.GetPeers() {
 		wg.Add(1)
 		go func(index int) {
-			resp, err := r.sendAppendEntries(ctx, index, req)
+			resp, err := r.RPCServer.SendAppendEntries(ctx, index, req)
 			if err != nil {
 				if e, ok := err.(*errors.Error); !ok || e.StatusCode != errors.Canceled {
 					r.logger.Error("while sending appendEntries rpc", slog.String("error", err.Error()))

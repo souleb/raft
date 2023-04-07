@@ -5,15 +5,10 @@ import (
 	"fmt"
 	"sync"
 	"sync/atomic"
-	"time"
 
-	grpc_retry "github.com/grpc-ecosystem/go-grpc-middleware/retry"
-	pb "github.com/souleb/raft/api"
+	"github.com/souleb/raft/server"
 	"github.com/souleb/raft/storage"
 	"golang.org/x/exp/slog"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/credentials/insecure"
 )
 
 const (
@@ -25,9 +20,14 @@ const (
 	defaultHeartbeatTimeout = 50
 	// defaultTimeout is the timeout in milliseconds.
 	defaultTimeout = 100
-	//defaultRetry is the number of retry to connect to a peer.
-	defaultRetry = 3
 )
+
+type RpcServer interface {
+	SendAppendEntries(ctx context.Context, node int, req server.AppendEntries) (*server.RPCResponse, error)
+	SendRequestVote(ctx context.Context, node int, req server.VoteRequest) (*server.RPCResponse, error)
+	Run(ctx context.Context, peers map[int]string, testMode bool) error
+	Stop()
+}
 
 // OptionsFn is a function that sets an option.
 type OptionsFn func(opt Options)
@@ -57,12 +57,12 @@ type Options struct {
 
 // RaftNode is a member of the Raft cluster
 type RaftNode struct {
-	pb.UnimplementedAppendEntriesServer
-	pb.UnimplementedVoteServer
 	// Peers is a map of peer id to peer address.
 	peers map[int]string
 	// Peers talks over grpc.
-	peersConn map[int]*grpc.ClientConn
+	//peersConn map[int]*grpc.ClientConn
+	// handle all the rpc comms
+	RPCServer RpcServer
 	// persister handles this peer's persisted state
 	persister *storage.Persister
 	state     *state
@@ -77,8 +77,8 @@ type RaftNode struct {
 
 	// id is this peer's id
 	id         int32
-	appendChan chan appenEntriesMsg
-	voteChan   chan requestVoteMsg
+	appendChan chan server.AppendEntries
+	voteChan   chan server.VoteRequest
 	// errChan is a channel that receives errors from the RaftNode.
 	errChan chan error
 	// Lock to protect shared access to this peer's fields
@@ -110,7 +110,7 @@ func WithTimeout(timeout int) OptionsFn {
 }
 
 // New creates a new RaftNode.
-func New(ctx context.Context, peers map[int]string, id int32, logger *slog.Logger, opts ...OptionsFn) (*RaftNode, error) {
+func New(ctx context.Context, peers map[int]string, id int32, port uint16, logger *slog.Logger, opts ...OptionsFn) (*RaftNode, error) {
 	r := &RaftNode{
 		peers:  peers,
 		id:     id,
@@ -146,10 +146,27 @@ func New(ctx context.Context, peers map[int]string, id int32, logger *slog.Logge
 		log:      make([]logEntry, 0),
 	}
 
-	r.appendChan = make(chan appenEntriesMsg)
-	r.voteChan = make(chan requestVoteMsg)
+	appendEntriesRPCChan := make(chan server.AppendEntries)
+	voteRPCChan := make(chan server.VoteRequest)
+	r.appendChan = appendEntriesRPCChan
+	r.voteChan = voteRPCChan
 
 	r.errChan = make(chan error)
+
+	s, err := server.New(int(r.id), port,
+		server.WithHeartbeatTimeout(r.heartbeatTimeout),
+		server.WithLogger(r.logger),
+		server.WithVoteRequestFunc(r.sendVoteRequestCallback(r.voteChan)),
+		server.WithAppendEntriesFunc(r.sendAppendEntriesCallback(r.appendChan)),
+		server.WithGetCurrentTermFunc(r.getCurrentTermCallback()),
+		server.WithTimeout(r.timeout),
+	)
+
+	if err != nil {
+		return nil, err
+	}
+
+	r.RPCServer = s
 
 	return r, nil
 }
@@ -159,7 +176,7 @@ func (r *RaftNode) Run(ctx context.Context, testMode bool) error {
 
 	r.startOnce.Do(func() {
 		r.logger.Info("starting raft node", slog.Int("id", int(r.GetID())))
-		err := r.connectToPeers(ctx, testMode)
+		err := r.RPCServer.Run(ctx, r.peers, testMode)
 		if err != nil {
 			retErr = fmt.Errorf("error while connecting to peers: %w", err)
 			return
@@ -185,6 +202,7 @@ func (r *RaftNode) Stop(cancel context.CancelFunc) error {
 		r.stop.Unlock()
 		cancel()
 		retErr = <-r.errChan
+		r.RPCServer.Stop()
 		r.logger.Info("raft node is stopped", slog.Int("id", int(r.GetID())))
 	})
 
@@ -233,12 +251,6 @@ func (r *RaftNode) GetPeers() map[int]string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return r.peers
-}
-
-func (r *RaftNode) GetPeersConn() map[int]*grpc.ClientConn {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	return r.peersConn
 }
 
 func (r *RaftNode) getElectionTimeoutMax() int {
@@ -303,41 +315,34 @@ func (r *RaftNode) AppendEntry(cmd any) (int, int, bool) {
 
 }
 
-func (r *RaftNode) connectToPeers(ctx context.Context, testMode bool) error {
-	//TODO: handle TLS and Use insecure.NewCredentials() for testing
-	// TODO: handle reconnect
-	ropts := []grpc_retry.CallOption{
-		grpc_retry.WithBackoff(grpc_retry.BackoffLinear(time.Duration(defaultHeartbeatTimeout) * time.Millisecond)),
-		grpc_retry.WithCodes(codes.Unavailable),
-		grpc_retry.WithMax(defaultRetry),
-	}
-
-	opts := []grpc.DialOption{
-		grpc.WithBlock(),
-		grpc.WithUnaryInterceptor(grpc_retry.UnaryClientInterceptor(ropts...)),
-	}
-
-	if testMode {
-		opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
-	}
-
-	if r.peersConn == nil {
-		r.peersConn = make(map[int]*grpc.ClientConn)
-	}
-
-	for key, addr := range r.peers {
-		conn, err := r.connectToPeer(ctx, addr, opts)
-		if err != nil {
-			return err
+func (r *RaftNode) sendVoteRequestCallback(voteRPCChan chan server.VoteRequest) server.SendVoteRequestFunc {
+	return func(term int64, candidateID int32, lastLogIndex int64, lastLogTerm int64, responseChan chan server.RPCResponse) {
+		voteRPCChan <- server.VoteRequest{
+			Term: term,
+			CandidateId: candidateID,
+			LastLogIndex: lastLogIndex,
+			LastLogTerm: lastLogTerm,
+			ResponseChan: responseChan,
 		}
-		r.peersConn[key] = conn
 	}
-	r.logger.Info("connected to peers", slog.Int("id", int(r.id)))
-	return nil
 }
 
-func (r *RaftNode) connectToPeer(ctx context.Context, addr string, opts []grpc.DialOption) (*grpc.ClientConn, error) {
-	ctx, cancel := context.WithTimeout(ctx, time.Duration(r.timeout)*time.Millisecond)
-	defer cancel()
-	return grpc.DialContext(ctx, addr, opts...)
+func (r *RaftNode) sendAppendEntriesCallback(appendEntriesRPCChan chan server.AppendEntries) server.SendAppendEntriesFunc {
+	return func(term int64, leaderId int32, prevLogIndex int64, prevLogTerm int64, entries []byte, leaderCommit int64, responseChan chan server.RPCResponse) {
+		appendEntriesRPCChan <- server.AppendEntries{
+			Term: term,
+			LeaderId: leaderId,
+			PrevLogIndex: prevLogIndex,
+			PrevLogTerm: prevLogTerm,
+			Entries: entries,
+			LeaderCommit: leaderCommit,
+			ResponseChan: responseChan,
+		}
+	}
+}
+
+func (r *RaftNode) getCurrentTermCallback() func() int64 {
+	return func() int64 {
+		return r.state.getCurrentTerm()
+	}
 }

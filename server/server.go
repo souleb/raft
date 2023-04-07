@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"net"
 	"sync"
 	"time"
 
@@ -25,21 +26,121 @@ const (
 	defaultRetry = 3
 )
 
-type Server struct {
-	pb.UnimplementedAppendEntriesServer
-	pb.UnimplementedVoteServer
-	peersConn  map[int]*grpc.ClientConn
-	appendChan chan appenEntriesMsg
-	voteChan   chan requestVoteMsg
+type getCurrentTermFunc func() int64
+type SendAppendEntriesFunc func(term int64, leaderId int32, prevLogIndex int64, prevLogTerm int64, entries []byte, leaderCommit int64, responseChan chan RPCResponse)
+type SendVoteRequestFunc func(term int64, candidateID int32, lastLogIndex int64, lastLogTerm int64, responseChan chan RPCResponse)
+
+type AppendEntries struct {
+	Term         int64
+	LeaderId     int32
+	PrevLogIndex int64
+	PrevLogTerm  int64
+	Entries      []byte
+	LeaderCommit int64
+	ResponseChan chan RPCResponse
+}
+
+type VoteRequest struct {
+	Term         int64
+	CandidateId  int32
+	LastLogIndex int64
+	LastLogTerm  int64
+	ResponseChan chan RPCResponse
+}
+
+type options struct {
+	getCurrentTermFunc    getCurrentTermFunc
+	sendVoteRequestFunc   SendVoteRequestFunc
+	sendAppendEntriesFunc SendAppendEntriesFunc
 	// heartbeatTimeout(ms) is used to send heartbeat to other peers
 	heartbeatTimeout int
 	// timeout(ms) is used to set the dial timeout for connecting to peers.
 	timeout int
-	id      int
 	// logger is the logger used by the server.
 	logger *slog.Logger
+}
+
+type OptFunc func(o *options)
+
+type Server struct {
+	pb.UnimplementedAppendEntriesServer
+	pb.UnimplementedVoteServer
+	peersConn  map[int]*grpc.ClientConn
+	id         int
+	port       uint16
+	grpcServer *grpc.Server
+	options
 	// Lock to protect shared access to this peer's state
 	mu sync.Mutex
+}
+
+func WithHeartbeatTimeout(heartbeatTimeout int) OptFunc {
+	return func(o *options) {
+		o.heartbeatTimeout = heartbeatTimeout
+	}
+}
+
+func WithTimeout(timeout int) OptFunc {
+	return func(o *options) {
+		o.timeout = timeout
+	}
+}
+
+func WithVoteRequestFunc(s func(term int64, candidateID int32, lastLogIndex int64, lastLogTerm int64, responseChan chan RPCResponse)) OptFunc {
+	return func(o *options) {
+		o.sendVoteRequestFunc = s
+	}
+}
+
+func WithAppendEntriesFunc(s func(term int64, leaderID int32, prevLogIndex int64, prevLogTerm int64, entries []byte, leaderCommit int64, responseChan chan RPCResponse)) OptFunc {
+	return func(o *options) {
+		o.sendAppendEntriesFunc = s
+	}
+}
+
+func WithGetCurrentTermFunc(g getCurrentTermFunc) OptFunc {
+	return func(o *options) {
+		o.getCurrentTermFunc = g
+	}
+}
+
+func WithLogger(logger *slog.Logger) OptFunc {
+	return func(o *options) {
+		o.logger = logger
+	}
+}
+
+func New(id int, port uint16, opts ...OptFunc) (*Server, error) {
+	s := &Server{
+		id: id,
+	}
+
+	for _, opt := range opts {
+		opt(&s.options)
+	}
+
+	if s.getCurrentTermFunc == nil || s.sendAppendEntriesFunc == nil || s.sendVoteRequestFunc == nil {
+		return nil, fmt.Errorf("appendEntriesRPC and voteRPC channels are mandatory")
+	}
+
+	if s.logger == nil {
+		return nil, fmt.Errorf("a logger is mandatory")
+	}
+
+	return s, nil
+}
+
+func (s *Server) Run(ctx context.Context, peers map[int]string, testMode bool) error {
+	// start server
+	err := s.start()
+	if err != nil {
+		return fmt.Errorf("error while starting the grpc server: %w", err)
+	}
+	err = s.connectToPeers(ctx, peers, testMode)
+	if err != nil {
+		return fmt.Errorf("error while connecting to peers: %w", err)
+	}
+	return nil
 }
 
 func (s *Server) GetPeersConn() map[int]*grpc.ClientConn {
@@ -49,79 +150,76 @@ func (s *Server) GetPeersConn() map[int]*grpc.ClientConn {
 }
 
 // requestVoteMsg is a message sent to the raft node to request a vote.
-type requestVoteMsg struct {
-	msg *pb.VoteRequest
-	// reply is a channel to send the response to.
-	reply chan *pb.VoteResponse
+type RPCResponse struct {
+	Term     int64
+	Response bool
 }
 
 // RequestVote is called by candidates to gather votes.
 func (s *Server) RequestVote(ctx context.Context, in *pb.VoteRequest) (*pb.VoteResponse, error) {
-	// term := s.getCurrentTerm()
-	// if in.GetTerm() < term {
-	// 	return &pb.VoteResponse{
-	// 		Term:        term,
-	// 		VoteGranted: false,
-	// 	}, nil
-	// }
-
-	msg := requestVoteMsg{
-		msg:   in,
-		reply: make(chan *pb.VoteResponse),
+	term := s.getCurrentTermFunc()
+	if in.GetTerm() < term {
+		return &pb.VoteResponse{
+			Term:        term,
+			VoteGranted: false,
+		}, nil
 	}
 
-	s.voteChan <- msg
+	reply := make(chan RPCResponse)
+	s.sendVoteRequestFunc(in.GetTerm(), in.GetCandidateId(), in.GetLastLogIndex(), in.GetLastLogTerm(), reply)
 
-	return <-msg.reply, nil
-}
+	response := <-reply
 
-type appenEntriesMsg struct {
-	msg   *pb.AppendEntriesRequest
-	reply chan *pb.AppendEntriesResponse
+	return &pb.VoteResponse{Term: response.Term, VoteGranted: response.Response}, nil
 }
 
 func (s *Server) AppendEntries(ctx context.Context, in *pb.AppendEntriesRequest) (*pb.AppendEntriesResponse, error) {
-	// term := s.getCurrentTerm()
-	// if in.GetTerm() < term {
-	// 	return &pb.AppendEntriesResponse{
-	// 		Term:    term,
-	// 		Success: false,
-	// 	}, nil
-	// }
-
-	msg := appenEntriesMsg{
-		msg:   in,
-		reply: make(chan *pb.AppendEntriesResponse),
+	term := s.getCurrentTermFunc()
+	if in.GetTerm() < term {
+		return &pb.AppendEntriesResponse{
+			Term:    term,
+			Success: false,
+		}, nil
 	}
 
-	s.appendChan <- msg
+	reply := make(chan RPCResponse)
+	s.sendAppendEntriesFunc(in.GetTerm(), in.GetLeaderId(), in.GetPrevLogIndex(), in.GetPrevLogTerm(), in.GetEntries(), in.GetLeaderCommit(), reply)
 
-	return <-msg.reply, nil
+	response := <-reply
+
+	return &pb.AppendEntriesResponse{Term: response.Term, Success: response.Response}, nil
 }
 
-type rpcResponse struct {
-	term     int64
-	response bool
-}
-
-// sendRequestVote sends a request vote to a node.
-func (s *Server) sendRequestVote(ctx context.Context, node int, req *pb.VoteRequest) (*rpcResponse, error) {
+// SendRequestVote sends a request vote to a node.
+func (s *Server) SendRequestVote(ctx context.Context, node int, req VoteRequest) (*RPCResponse, error) {
 	client := pb.NewVoteClient(s.GetPeersConn()[node])
-	resp, err := client.RequestVote(ctx, req)
+	resp, err := client.RequestVote(ctx, &pb.VoteRequest{
+		Term:         req.Term,
+		CandidateId:  req.CandidateId,
+		LastLogIndex: req.LastLogIndex,
+		LastLogTerm:  req.LastLogTerm,
+	})
 	if err != nil {
 		st, ok := status.FromError(err)
 		if !ok {
 			return nil, fmt.Errorf("failed to send request vote to node %d: %w", node, err)
 		}
-		return nil, &errors.Error{errors.Code(st.Code()), err}
+		return nil, &errors.Error{StatusCode: errors.Code(st.Code()), Err: err}
 	}
-	return &rpcResponse{resp.GetTerm(), resp.GetVoteGranted()}, nil
+	return &RPCResponse{resp.GetTerm(), resp.GetVoteGranted()}, nil
 }
 
 // sendRequestVote sends a request vote to a node.
-func (s *Server) sendAppendEntries(ctx context.Context, node int, req *pb.AppendEntriesRequest) (*rpcResponse, error) {
+func (s *Server) SendAppendEntries(ctx context.Context, node int, req AppendEntries) (*RPCResponse, error) {
 	client := pb.NewAppendEntriesClient(s.GetPeersConn()[node])
-	resp, err := client.AppendEntries(ctx, req)
+	resp, err := client.AppendEntries(ctx, &pb.AppendEntriesRequest{
+		Term:         req.Term,
+		LeaderId:     req.LeaderId,
+		PrevLogIndex: req.PrevLogIndex,
+		PrevLogTerm:  req.PrevLogTerm,
+		Entries:      req.Entries,
+		LeaderCommit: req.LeaderCommit,
+	})
 	if err != nil {
 		st, ok := status.FromError(err)
 		if !ok {
@@ -130,7 +228,7 @@ func (s *Server) sendAppendEntries(ctx context.Context, node int, req *pb.Append
 		return nil, &errors.Error{StatusCode: errors.Code(st.Code()), Err: err}
 	}
 
-	return &rpcResponse{resp.GetTerm(), resp.GetSuccess()}, nil
+	return &RPCResponse{resp.GetTerm(), resp.GetSuccess()}, nil
 }
 
 func (s *Server) connectToPeers(ctx context.Context, peers map[int]string, testMode bool) error {
@@ -182,4 +280,20 @@ func (s *Server) connectToPeer(ctx context.Context, addr string, opts []grpc.Dia
 		}
 	}
 	return conn, err
+}
+
+func (s *Server) start() error {
+	lis, err := net.Listen("tcp", fmt.Sprintf("localhost:%d", s.id))
+	if err != nil {
+		return fmt.Errorf("failed to listen: %w", err)
+	}
+	s.grpcServer = grpc.NewServer()
+	pb.RegisterAppendEntriesServer(s.grpcServer, s)
+	pb.RegisterVoteServer(s.grpcServer, s)
+	go s.grpcServer.Serve(lis)
+	return nil
+}
+
+func (s *Server) Stop() {
+	s.grpcServer.Stop()
 }
