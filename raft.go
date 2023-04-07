@@ -315,8 +315,8 @@ func (r *RaftNode) AppendEntry(cmd any) (int, int, bool) {
 
 }
 
-func (r *RaftNode) getCurrentTermCallback() func() int64 {
-	return func() int64 {
-		return r.state.getCurrentTerm()
+func (r *RaftNode) getCurrentTermCallback() func() (int64, bool) {
+	return func() (int64, bool) {
+		return r.GetState()
 	}
 }

@@ -26,7 +26,7 @@ const (
 	defaultRetry = 3
 )
 
-type getCurrentTermFunc func() int64
+type getStateFunc func() (int64, bool)
 type SendAppendEntriesFunc func(term int64, leaderId int32, prevLogIndex int64, prevLogTerm int64, entries []byte, leaderCommit int64, responseChan chan RPCResponse)
 type SendVoteRequestFunc func(term int64, candidateID int32, lastLogIndex int64, lastLogTerm int64, responseChan chan RPCResponse)
 
@@ -49,7 +49,7 @@ type VoteRequest struct {
 }
 
 type options struct {
-	getCurrentTermFunc   getCurrentTermFunc
+	getStateFunc         getStateFunc
 	voteRPCChan          chan VoteRequest
 	appendEntriesRPCChan chan AppendEntries
 	// heartbeatTimeout(ms) is used to send heartbeat to other peers
@@ -98,9 +98,9 @@ func WithAppendEntryRPCChan(appendEntriesChan chan AppendEntries) OptFunc {
 	}
 }
 
-func WithGetCurrentTermFunc(g getCurrentTermFunc) OptFunc {
+func WithGetCurrentTermFunc(g getStateFunc) OptFunc {
 	return func(o *options) {
-		o.getCurrentTermFunc = g
+		o.getStateFunc = g
 	}
 }
 
@@ -119,7 +119,7 @@ func New(id int, port uint16, opts ...OptFunc) (*Server, error) {
 		opt(&s.options)
 	}
 
-	if s.getCurrentTermFunc == nil || s.appendEntriesRPCChan == nil || s.voteRPCChan == nil {
+	if s.getStateFunc == nil || s.appendEntriesRPCChan == nil || s.voteRPCChan == nil {
 		return nil, fmt.Errorf("appendEntriesRPC and voteRPC channels are mandatory")
 	}
 
@@ -157,7 +157,7 @@ type RPCResponse struct {
 
 // RequestVote is called by candidates to gather votes.
 func (s *Server) RequestVote(ctx context.Context, in *pb.VoteRequest) (*pb.VoteResponse, error) {
-	term := s.getCurrentTermFunc()
+	term, _ := s.getStateFunc()
 	if in.GetTerm() < term {
 		return &pb.VoteResponse{
 			Term:        term,
@@ -180,7 +180,7 @@ func (s *Server) RequestVote(ctx context.Context, in *pb.VoteRequest) (*pb.VoteR
 }
 
 func (s *Server) AppendEntries(ctx context.Context, in *pb.AppendEntriesRequest) (*pb.AppendEntriesResponse, error) {
-	term := s.getCurrentTermFunc()
+	term, _ := s.getStateFunc()
 	if in.GetTerm() < term {
 		return &pb.AppendEntriesResponse{
 			Term:    term,
