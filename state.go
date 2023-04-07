@@ -33,16 +33,21 @@ type state struct {
 	mu sync.Mutex
 }
 
-func (s *state) setCurrentTerm(term int64) {
+func (s *state) setTermAndVote(term int64, id int32) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.currentTerm = term
+	s.votedFor = id
 }
 
-func (s *state) setVotedFor(votedFor int32) {
+func (s *state) resetElectionFields(term int64, leader bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.votedFor = votedFor
+	s.currentTerm = term
+	s.votedFor = -1
+	if leader {
+		s.isLeader = false
+	}
 }
 
 func (s *state) getVotedFor() int32 {
@@ -88,24 +93,18 @@ func (r *RaftNode) follower(ctx context.Context) stateFn {
 				r.logger.Debug("received request with newer term", slog.Int("id", int(r.GetID())),
 					slog.Int("currentTerm", int(r.state.getCurrentTerm())), slog.Int("term", int(req.Term)),
 					slog.String("state", "follower"))
-				r.state.setCurrentTerm(req.Term)
-				r.state.setVotedFor(-1)
+				r.state.resetElectionFields(req.Term, false)
 			}
 		case req := <-r.voteChan:
-			term := r.state.getCurrentTerm()
+			voted := false
 			r.logger.Debug("received vote request", slog.Int("id", int(r.GetID())), slog.Int("currentTerm",
-				int(term)), slog.Int("term", int(req.Term)), slog.Int("candidateID",
+				int(r.state.getCurrentTerm())), slog.Int("term", int(req.Term)), slog.Int("candidateID",
 				int(req.CandidateId)), slog.String("state", "follower"))
-			vote := server.RPCResponse{
-				Term:     term,
-				Response: false,
-			}
-			if req.Term > term {
-				r.logger.Debug("received request with newer term", slog.Int("currentTerm", int(term)),
+			if req.Term > r.state.getCurrentTerm() {
+				r.logger.Debug("received request with newer term", slog.Int("currentTerm", int(r.state.getCurrentTerm())),
 					slog.Int("term", int(req.Term)), slog.Int("candidateID", int(req.CandidateId)),
 					slog.String("state", "follower"))
-				r.state.setCurrentTerm(req.Term)
-				r.state.setVotedFor(-1)
+				r.state.resetElectionFields(req.Term, false)
 			}
 			votedFor := r.state.getVotedFor()
 			if votedFor == -1 || votedFor == req.CandidateId {
@@ -115,12 +114,16 @@ func (r *RaftNode) follower(ctx context.Context) stateFn {
 				// if incoming request's log is at least as up-to-date as owned log, grant vote
 				if req.LastLogTerm > lastTerm || (req.LastLogTerm == lastTerm && req.LastLogIndex >= lastIndex) {
 					r.state.votedFor = req.CandidateId
-					vote.Response = true
+					voted = true
 					resetTimer(timer, randomWaitTime(min, max))
 					r.logger.Debug("voted for candidate", slog.Int("currentTerm", int(r.state.getCurrentTerm())),
 						slog.Int("term", int(req.Term)), slog.Int("candidateID", int(req.CandidateId)),
 						slog.String("state", "follower"))
 				}
+			}
+			vote := server.RPCResponse{
+				Term:     r.state.getCurrentTerm(),
+				Response: voted,
 			}
 			req.ResponseChan <- vote
 		case <-timer.C:
@@ -160,7 +163,7 @@ func (r *RaftNode) candidate(ctx context.Context) stateFn {
 				if !timer.Stop() {
 					<-timer.C
 				}
-				r.prepareStateRevert(vote.Term, cancel, &wg)
+				r.prepareStateRevert(vote.Term, false, cancel, &wg)
 				r.logger.Debug("received response with newer term", slog.Int("id", int(r.GetID())),
 					slog.Int("currentTerm", int(r.state.getCurrentTerm())), slog.Int("term", int(vote.Term)),
 					slog.String("state", "candidate"))
@@ -184,14 +187,14 @@ func (r *RaftNode) candidate(ctx context.Context) stateFn {
 				if !timer.Stop() {
 					<-timer.C
 				}
-				r.prepareStateRevert(resp.Term, cancel, &wg)
+				r.prepareStateRevert(resp.Term, false, cancel, &wg)
 				return r.follower
 			}
 		case req := <-r.voteChan:
 			r.logger.Debug("received vote request", slog.Int("currentTerm", int(r.state.getCurrentTerm())),
 				slog.Int("term", int(req.Term)), slog.String("state", "candidate"))
 			if req.Term > r.state.getCurrentTerm() {
-				r.prepareStateRevert(req.Term, cancel, &wg)
+				r.prepareStateRevert(req.Term, false, cancel, &wg)
 				req.ResponseChan <- server.RPCResponse{Term: req.Term, Response: false}
 				return r.follower
 			}
@@ -203,10 +206,8 @@ func (r *RaftNode) candidate(ctx context.Context) stateFn {
 func (r *RaftNode) startElection(ctx context.Context, wg *sync.WaitGroup, respChan chan<- *server.RPCResponse) (*time.Timer, int) {
 	r.logger.Debug("starting next election", slog.Int("id", int(r.GetID())),
 		slog.Int("currentTerm", int(r.state.getCurrentTerm())))
-	// increment current term
-	r.state.setCurrentTerm(r.state.getCurrentTerm() + 1)
-	// vote for self
-	r.state.setVotedFor(r.GetID())
+	// increment current term and vote for self
+	r.state.setTermAndVote(r.state.getCurrentTerm()+1, r.GetID())
 	// set election timer
 	timer := newTimer(randomWaitTime(int64(r.getElectionTimeoutMin()), int64(r.getElectionTimeoutMax())))
 	// send RequestVote RPCs to all other servers
@@ -230,8 +231,7 @@ func (r *RaftNode) leader(ctx context.Context) stateFn {
 			return nil
 		case resp := <-respChan:
 			if resp.Term > r.state.getCurrentTerm() {
-				r.state.setLeader(false)
-				r.prepareStateRevert(resp.Term, cancel, &wg)
+				r.prepareStateRevert(resp.Term, true, cancel, &wg)
 				return r.follower
 			}
 		case <-ticker.C:
@@ -239,8 +239,7 @@ func (r *RaftNode) leader(ctx context.Context) stateFn {
 			ticker.Reset(time.Duration(r.heartbeatTimeout) * time.Millisecond)
 		case resp := <-r.appendChan:
 			if resp.Term > r.state.getCurrentTerm() {
-				r.state.setLeader(false)
-				r.prepareStateRevert(resp.Term, cancel, &wg)
+				r.prepareStateRevert(resp.Term, true, cancel, &wg)
 				return r.follower
 			}
 		case req := <-r.voteChan:
@@ -248,8 +247,7 @@ func (r *RaftNode) leader(ctx context.Context) stateFn {
 				r.logger.Debug("received vote request with newer term, transitionnning to follower",
 					slog.Int("id", int(r.GetID())), slog.Int("currentTerm", int(r.state.getCurrentTerm())),
 					slog.Int("term", int(req.Term)), slog.String("state", "leader"))
-				r.state.setLeader(false)
-				r.prepareStateRevert(req.Term, cancel, &wg)
+				r.prepareStateRevert(req.Term, true, cancel, &wg)
 				req.ResponseChan <- server.RPCResponse{Term: r.state.getCurrentTerm(), Response: false}
 				return r.follower
 			}
@@ -258,11 +256,10 @@ func (r *RaftNode) leader(ctx context.Context) stateFn {
 	}
 }
 
-func (r *RaftNode) prepareStateRevert(term int64, cancel context.CancelFunc, wg *sync.WaitGroup) {
+func (r *RaftNode) prepareStateRevert(term int64, leader bool, cancel context.CancelFunc, wg *sync.WaitGroup) {
 	// If a candidate or leader discovers
 	// that its term is out of date, it immediately reverts to follower state.
-	r.state.setCurrentTerm(term)
-	r.state.setVotedFor(-1)
+	r.state.resetElectionFields(term, leader)
 	cancel()
 	wg.Wait()
 }
