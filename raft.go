@@ -156,8 +156,8 @@ func New(ctx context.Context, peers map[int]string, id int32, port uint16, logge
 	s, err := server.New(int(r.id), port,
 		server.WithHeartbeatTimeout(r.heartbeatTimeout),
 		server.WithLogger(r.logger),
-		server.WithVoteRequestFunc(r.sendVoteRequestCallback(r.voteChan)),
-		server.WithAppendEntriesFunc(r.sendAppendEntriesCallback(r.appendChan)),
+		server.WithVoteRPCChan(r.voteChan),
+		server.WithAppendEntryRPCChan(r.appendChan),
 		server.WithGetCurrentTermFunc(r.getCurrentTermCallback()),
 		server.WithTimeout(r.timeout),
 	)
@@ -313,32 +313,6 @@ func (r *RaftNode) AppendEntry(cmd any) (int, int, bool) {
 	// append entry to local log and respond after entry applied to state machine
 	return index, term, r.state.isLeader
 
-}
-
-func (r *RaftNode) sendVoteRequestCallback(voteRPCChan chan server.VoteRequest) server.SendVoteRequestFunc {
-	return func(term int64, candidateID int32, lastLogIndex int64, lastLogTerm int64, responseChan chan server.RPCResponse) {
-		voteRPCChan <- server.VoteRequest{
-			Term: term,
-			CandidateId: candidateID,
-			LastLogIndex: lastLogIndex,
-			LastLogTerm: lastLogTerm,
-			ResponseChan: responseChan,
-		}
-	}
-}
-
-func (r *RaftNode) sendAppendEntriesCallback(appendEntriesRPCChan chan server.AppendEntries) server.SendAppendEntriesFunc {
-	return func(term int64, leaderId int32, prevLogIndex int64, prevLogTerm int64, entries []byte, leaderCommit int64, responseChan chan server.RPCResponse) {
-		appendEntriesRPCChan <- server.AppendEntries{
-			Term: term,
-			LeaderId: leaderId,
-			PrevLogIndex: prevLogIndex,
-			PrevLogTerm: prevLogTerm,
-			Entries: entries,
-			LeaderCommit: leaderCommit,
-			ResponseChan: responseChan,
-		}
-	}
 }
 
 func (r *RaftNode) getCurrentTermCallback() func() int64 {

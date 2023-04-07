@@ -49,9 +49,9 @@ type VoteRequest struct {
 }
 
 type options struct {
-	getCurrentTermFunc    getCurrentTermFunc
-	sendVoteRequestFunc   SendVoteRequestFunc
-	sendAppendEntriesFunc SendAppendEntriesFunc
+	getCurrentTermFunc   getCurrentTermFunc
+	voteRPCChan          chan VoteRequest
+	appendEntriesRPCChan chan AppendEntries
 	// heartbeatTimeout(ms) is used to send heartbeat to other peers
 	heartbeatTimeout int
 	// timeout(ms) is used to set the dial timeout for connecting to peers.
@@ -86,15 +86,15 @@ func WithTimeout(timeout int) OptFunc {
 	}
 }
 
-func WithVoteRequestFunc(s func(term int64, candidateID int32, lastLogIndex int64, lastLogTerm int64, responseChan chan RPCResponse)) OptFunc {
+func WithVoteRPCChan(voteChan chan VoteRequest) OptFunc {
 	return func(o *options) {
-		o.sendVoteRequestFunc = s
+		o.voteRPCChan = voteChan
 	}
 }
 
-func WithAppendEntriesFunc(s func(term int64, leaderID int32, prevLogIndex int64, prevLogTerm int64, entries []byte, leaderCommit int64, responseChan chan RPCResponse)) OptFunc {
+func WithAppendEntryRPCChan(appendEntriesChan chan AppendEntries) OptFunc {
 	return func(o *options) {
-		o.sendAppendEntriesFunc = s
+		o.appendEntriesRPCChan = appendEntriesChan
 	}
 }
 
@@ -119,7 +119,7 @@ func New(id int, port uint16, opts ...OptFunc) (*Server, error) {
 		opt(&s.options)
 	}
 
-	if s.getCurrentTermFunc == nil || s.sendAppendEntriesFunc == nil || s.sendVoteRequestFunc == nil {
+	if s.getCurrentTermFunc == nil || s.appendEntriesRPCChan == nil || s.voteRPCChan == nil {
 		return nil, fmt.Errorf("appendEntriesRPC and voteRPC channels are mandatory")
 	}
 
@@ -166,7 +166,13 @@ func (s *Server) RequestVote(ctx context.Context, in *pb.VoteRequest) (*pb.VoteR
 	}
 
 	reply := make(chan RPCResponse)
-	s.sendVoteRequestFunc(in.GetTerm(), in.GetCandidateId(), in.GetLastLogIndex(), in.GetLastLogTerm(), reply)
+	s.voteRPCChan <- VoteRequest{
+		Term:         in.GetTerm(),
+		CandidateId:  in.GetCandidateId(),
+		LastLogIndex: in.GetLastLogIndex(),
+		LastLogTerm:  in.GetLastLogTerm(),
+		ResponseChan: reply,
+	}
 
 	response := <-reply
 
@@ -183,8 +189,15 @@ func (s *Server) AppendEntries(ctx context.Context, in *pb.AppendEntriesRequest)
 	}
 
 	reply := make(chan RPCResponse)
-	s.sendAppendEntriesFunc(in.GetTerm(), in.GetLeaderId(), in.GetPrevLogIndex(), in.GetPrevLogTerm(), in.GetEntries(), in.GetLeaderCommit(), reply)
-
+	s.appendEntriesRPCChan <- AppendEntries{
+		Term:         in.GetTerm(),
+		LeaderId:     in.GetLeaderId(),
+		PrevLogIndex: in.GetPrevLogIndex(),
+		PrevLogTerm:  in.GetPrevLogTerm(),
+		Entries:      in.GetEntries(),
+		LeaderCommit: in.GetLeaderCommit(),
+		ResponseChan: reply,
+	}
 	response := <-reply
 
 	return &pb.AppendEntriesResponse{Term: response.Term, Success: response.Response}, nil
