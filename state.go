@@ -30,7 +30,11 @@ type state struct {
 	// for each server, index of highest log entry known to be replicated on server (initialized to 0, increases monotonically)
 	matchIndex []int
 	// Lock to protect shared access
-	mu sync.Mutex
+
+	// Observer is a list of observers that are notified when the RaftNode
+	// observes a change in leadership.
+	observers []Observer
+	mu        sync.Mutex
 }
 
 func (s *state) setTermAndVote(term int64, id int32) {
@@ -47,6 +51,9 @@ func (s *state) resetElectionFields(term int64, leader bool) {
 	s.votedFor = -1
 	if leader {
 		s.isLeader = false
+		for _, o := range s.observers {
+			o.Observe(false)
+		}
 	}
 }
 
@@ -66,6 +73,9 @@ func (s *state) setLeader(leader bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.isLeader = leader
+	for _, o := range s.observers {
+		o.Observe(leader)
+	}
 }
 
 func (r *RaftNode) follower(ctx context.Context) stateFn {

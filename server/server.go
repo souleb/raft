@@ -14,6 +14,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/health"
 	"google.golang.org/grpc/status"
 )
 
@@ -24,7 +25,16 @@ const (
 	defaultTimeout = 100
 	//defaultRetry is the number of retry to connect to a peer.
 	defaultRetry = 3
+	// leader health service
+	leaderHealthService = "quis.RaftLeader"
 )
+
+type Server interface {
+	SendAppendEntries(ctx context.Context, node int, req AppendEntries) (*RPCResponse, error)
+	SendRequestVote(ctx context.Context, node int, req VoteRequest) (*RPCResponse, error)
+	Run(ctx context.Context, peers map[int]string, testMode bool) error
+	Stop()
+}
 
 type getStateFunc func() (int64, bool)
 type SendAppendEntriesFunc func(term int64, leaderId int32, prevLogIndex int64, prevLogTerm int64, entries []byte, leaderCommit int64, responseChan chan RPCResponse)
@@ -62,13 +72,15 @@ type options struct {
 
 type OptFunc func(o *options)
 
-type Server struct {
+type RPCServer struct {
 	pb.UnimplementedAppendEntriesServer
 	pb.UnimplementedVoteServer
-	peersConn  map[int]*grpc.ClientConn
-	id         int
-	port       uint16
-	grpcServer *grpc.Server
+	peersConn    map[int]*grpc.ClientConn
+	id           int
+	port         uint16
+	grpcServer   *grpc.Server
+	hs           *health.Server
+	observerChan chan bool
 	options
 	// Lock to protect shared access to this peer's state
 	mu sync.Mutex
@@ -110,8 +122,8 @@ func WithLogger(logger *slog.Logger) OptFunc {
 	}
 }
 
-func New(id int, port uint16, opts ...OptFunc) (*Server, error) {
-	s := &Server{
+func New(id int, port uint16, opts ...OptFunc) (*RPCServer, error) {
+	s := &RPCServer{
 		id: id,
 	}
 
@@ -127,14 +139,22 @@ func New(id int, port uint16, opts ...OptFunc) (*Server, error) {
 		return nil, fmt.Errorf("a logger is mandatory")
 	}
 
+	s.observerChan = make(chan bool, 1)
+
 	return s, nil
 }
 
-func (s *Server) Run(ctx context.Context, peers map[int]string, testMode bool) error {
+func (s *RPCServer) Run(ctx context.Context, peers map[int]string, testMode bool) error {
 	// start server
 	err := s.start()
 	if err != nil {
 		return fmt.Errorf("error while starting the grpc server: %w", err)
+	}
+
+	// setup health server
+	err = s.setupHealthServer([]string{leaderHealthService})
+	if err != nil {
+		return fmt.Errorf("error while setting up the health server: %w", err)
 	}
 	err = s.connectToPeers(ctx, peers, testMode)
 	if err != nil {
@@ -143,7 +163,7 @@ func (s *Server) Run(ctx context.Context, peers map[int]string, testMode bool) e
 	return nil
 }
 
-func (s *Server) GetPeersConn() map[int]*grpc.ClientConn {
+func (s *RPCServer) GetPeersConn() map[int]*grpc.ClientConn {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.peersConn
@@ -156,7 +176,7 @@ type RPCResponse struct {
 }
 
 // RequestVote is called by candidates to gather votes.
-func (s *Server) RequestVote(ctx context.Context, in *pb.VoteRequest) (*pb.VoteResponse, error) {
+func (s *RPCServer) RequestVote(ctx context.Context, in *pb.VoteRequest) (*pb.VoteResponse, error) {
 	term, _ := s.getStateFunc()
 	if in.GetTerm() < term {
 		return &pb.VoteResponse{
@@ -179,7 +199,7 @@ func (s *Server) RequestVote(ctx context.Context, in *pb.VoteRequest) (*pb.VoteR
 	return &pb.VoteResponse{Term: response.Term, VoteGranted: response.Response}, nil
 }
 
-func (s *Server) AppendEntries(ctx context.Context, in *pb.AppendEntriesRequest) (*pb.AppendEntriesResponse, error) {
+func (s *RPCServer) AppendEntries(ctx context.Context, in *pb.AppendEntriesRequest) (*pb.AppendEntriesResponse, error) {
 	term, _ := s.getStateFunc()
 	if in.GetTerm() < term {
 		return &pb.AppendEntriesResponse{
@@ -204,7 +224,7 @@ func (s *Server) AppendEntries(ctx context.Context, in *pb.AppendEntriesRequest)
 }
 
 // SendRequestVote sends a request vote to a node.
-func (s *Server) SendRequestVote(ctx context.Context, node int, req VoteRequest) (*RPCResponse, error) {
+func (s *RPCServer) SendRequestVote(ctx context.Context, node int, req VoteRequest) (*RPCResponse, error) {
 	client := pb.NewVoteClient(s.GetPeersConn()[node])
 	resp, err := client.RequestVote(ctx, &pb.VoteRequest{
 		Term:         req.Term,
@@ -223,7 +243,7 @@ func (s *Server) SendRequestVote(ctx context.Context, node int, req VoteRequest)
 }
 
 // sendRequestVote sends a request vote to a node.
-func (s *Server) SendAppendEntries(ctx context.Context, node int, req AppendEntries) (*RPCResponse, error) {
+func (s *RPCServer) SendAppendEntries(ctx context.Context, node int, req AppendEntries) (*RPCResponse, error) {
 	client := pb.NewAppendEntriesClient(s.GetPeersConn()[node])
 	resp, err := client.AppendEntries(ctx, &pb.AppendEntriesRequest{
 		Term:         req.Term,
@@ -244,18 +264,17 @@ func (s *Server) SendAppendEntries(ctx context.Context, node int, req AppendEntr
 	return &RPCResponse{resp.GetTerm(), resp.GetSuccess()}, nil
 }
 
-func (s *Server) connectToPeers(ctx context.Context, peers map[int]string, testMode bool) error {
-	//TODO: handle TLS and Use insecure.NewCredentials() for testing
-	// TODO: handle reconnect
-	ropts := []grpc_retry.CallOption{
+func (s *RPCServer) connectToPeers(ctx context.Context, peers map[int]string, testMode bool) error {
+	// TODO: handle TLS and Use insecure.NewCredentials() for testing
+	// TODO: handle reconnection in case of peer failure
+	rOpts := []grpc_retry.CallOption{
 		grpc_retry.WithBackoff(grpc_retry.BackoffLinear(time.Duration(defaultHeartbeatTimeout) * time.Millisecond)),
 		grpc_retry.WithCodes(codes.Unavailable),
 		grpc_retry.WithMax(defaultRetry),
 	}
 
 	opts := []grpc.DialOption{
-		grpc.WithBlock(),
-		grpc.WithUnaryInterceptor(grpc_retry.UnaryClientInterceptor(ropts...)),
+		grpc.WithUnaryInterceptor(grpc_retry.UnaryClientInterceptor(rOpts...)),
 	}
 
 	if testMode {
@@ -277,7 +296,7 @@ func (s *Server) connectToPeers(ctx context.Context, peers map[int]string, testM
 	return nil
 }
 
-func (s *Server) connectToPeer(ctx context.Context, addr string, opts []grpc.DialOption) (*grpc.ClientConn, error) {
+func (s *RPCServer) connectToPeer(ctx context.Context, addr string, opts []grpc.DialOption) (*grpc.ClientConn, error) {
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(s.timeout)*time.Millisecond)
 	defer cancel()
 	retryCount := 0
@@ -295,7 +314,7 @@ func (s *Server) connectToPeer(ctx context.Context, addr string, opts []grpc.Dia
 	return conn, err
 }
 
-func (s *Server) start() error {
+func (s *RPCServer) start() error {
 	lis, err := net.Listen("tcp", fmt.Sprintf("localhost:%d", s.id))
 	if err != nil {
 		return fmt.Errorf("failed to listen: %w", err)
@@ -307,6 +326,13 @@ func (s *Server) start() error {
 	return nil
 }
 
-func (s *Server) Stop() {
+func (s *RPCServer) Stop() {
+	if s.hs != nil {
+		s.hs.Shutdown()
+	}
 	s.grpcServer.Stop()
+}
+
+func (s *RPCServer) Observe(state bool) {
+	s.observerChan <- state
 }

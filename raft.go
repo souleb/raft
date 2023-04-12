@@ -22,13 +22,6 @@ const (
 	defaultTimeout = 100
 )
 
-type RpcServer interface {
-	SendAppendEntries(ctx context.Context, node int, req server.AppendEntries) (*server.RPCResponse, error)
-	SendRequestVote(ctx context.Context, node int, req server.VoteRequest) (*server.RPCResponse, error)
-	Run(ctx context.Context, peers map[int]string, testMode bool) error
-	Stop()
-}
-
 // OptionsFn is a function that sets an option.
 type OptionsFn func(opt Options)
 
@@ -62,7 +55,8 @@ type RaftNode struct {
 	// Peers talks over grpc.
 	//peersConn map[int]*grpc.ClientConn
 	// handle all the rpc comms
-	RPCServer RpcServer
+	RPCServer server.Server
+
 	// persister handles this peer's persisted state
 	persister *storage.Persister
 	state     *state
@@ -167,6 +161,7 @@ func New(ctx context.Context, peers map[int]string, id int32, port uint16, logge
 	}
 
 	r.RPCServer = s
+	r.state.observers = append(r.state.observers, s)
 
 	return r, nil
 }
