@@ -6,6 +6,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/souleb/raft/log"
 	"github.com/souleb/raft/server"
 	"github.com/souleb/raft/storage"
 	"golang.org/x/exp/slog"
@@ -24,16 +25,6 @@ const (
 
 // OptionsFn is a function that sets an option.
 type OptionsFn func(opt Options)
-
-// // ApplyEntry is a command to be applied to the state machine.
-// type ApplyEntry struct {
-// 	// CommandValid is true if the command is valid.
-// 	CommandValid bool
-// 	// CommandIndex is the index of the command in the log.
-// 	Command any
-// 	// CommandIndex is the index of the command in the log.
-// 	CommandIndex int
-// }
 
 // Options holds the configurable options for a RaftNode.
 type Options struct {
@@ -68,11 +59,14 @@ type RaftNode struct {
 	stop     sync.RWMutex
 	stopOnce sync.Once
 	stopped  bool
+	cancel   context.CancelFunc
 
 	// id is this peer's id
-	id         int32
-	appendChan chan server.AppendEntries
-	voteChan   chan server.VoteRequest
+	id             int32
+	leaderID       int32
+	appendChan     chan server.AppendEntries
+	voteChan       chan server.VoteRequest
+	applyEntryChan chan server.ApplyRequest
 	// errChan is a channel that receives errors from the RaftNode.
 	errChan chan error
 	// Lock to protect shared access to this peer's fields
@@ -104,11 +98,12 @@ func WithTimeout(timeout int) OptionsFn {
 }
 
 // New creates a new RaftNode.
-func New(ctx context.Context, peers map[int]string, id int32, port uint16, logger *slog.Logger, opts ...OptionsFn) (*RaftNode, error) {
+func New(peers map[int]string, id int32, port uint16, logger *slog.Logger, opts ...OptionsFn) (*RaftNode, error) {
 	r := &RaftNode{
-		peers:  peers,
-		id:     id,
-		logger: logger,
+		peers:    peers,
+		id:       id,
+		leaderID: -1,
+		logger:   logger,
 	}
 
 	for _, opt := range opts {
@@ -136,22 +131,30 @@ func New(ctx context.Context, peers map[int]string, id int32, port uint16, logge
 	}
 
 	r.state = &state{
-		votedFor: -1,
-		log:      make([]logEntry, 0),
+		currentTerm: 0,
+		votedFor:    -1,
+		log:         make([]log.LogEntry, 0),
+		commitIndex: 0,
+		lastApplied: 0,
+		nextIndex:   make(map[int]int64),
+		matchIndex:  make(map[int]int64),
 	}
+
+	// add no-op entry to the log
+	r.state.initLog()
 
 	appendEntriesRPCChan := make(chan server.AppendEntries)
 	voteRPCChan := make(chan server.VoteRequest)
+	applyEntryRPCChan := make(chan server.ApplyRequest)
 	r.appendChan = appendEntriesRPCChan
 	r.voteChan = voteRPCChan
+	r.applyEntryChan = applyEntryRPCChan
 
 	r.errChan = make(chan error)
 
 	s, err := server.New(int(r.id), port,
 		server.WithHeartbeatTimeout(r.heartbeatTimeout),
 		server.WithLogger(r.logger),
-		server.WithVoteRPCChan(r.voteChan),
-		server.WithAppendEntryRPCChan(r.appendChan),
 		server.WithGetCurrentTermFunc(r.getCurrentTermCallback()),
 		server.WithTimeout(r.timeout),
 	)
@@ -160,18 +163,22 @@ func New(ctx context.Context, peers map[int]string, id int32, port uint16, logge
 		return nil, err
 	}
 
-	r.RPCServer = s
 	r.state.observers = append(r.state.observers, s)
+	r.RPCServer = s.SetVoteRPCChan(r.voteChan).
+		SetAppendEntryRPCChan(r.appendChan).
+		SetApplyEntryRPCChan(r.applyEntryChan)
 
 	return r, nil
 }
 
-func (r *RaftNode) Run(ctx context.Context, testMode bool) error {
+func (r *RaftNode) Run(ctx context.Context, secure bool) error {
 	var retErr error
+	ctx, cancel := context.WithCancel(ctx)
+	r.cancel = cancel
 
 	r.startOnce.Do(func() {
 		r.logger.Info("starting raft node", slog.Int("id", int(r.GetID())))
-		err := r.RPCServer.Run(ctx, r.peers, testMode)
+		err := r.RPCServer.Run(ctx, r.peers, secure)
 		if err != nil {
 			retErr = fmt.Errorf("error while connecting to peers: %w", err)
 			return
@@ -187,7 +194,7 @@ func (r *RaftNode) Run(ctx context.Context, testMode bool) error {
 }
 
 // Stop tells the RaftNode to shut itself down.
-func (r *RaftNode) Stop(cancel context.CancelFunc) error {
+func (r *RaftNode) Stop() error {
 	var retErr error
 
 	r.stopOnce.Do(func() {
@@ -195,9 +202,10 @@ func (r *RaftNode) Stop(cancel context.CancelFunc) error {
 		r.stop.Lock()
 		r.stopped = true
 		r.stop.Unlock()
-		cancel()
+		r.cancel()
 		retErr = <-r.errChan
 		r.RPCServer.Stop()
+		r.state.setLeader(false)
 		r.logger.Info("raft node is stopped", slog.Int("id", int(r.GetID())))
 	})
 
@@ -242,10 +250,58 @@ func (r *RaftNode) GetState() (int64, bool) {
 	return r.state.currentTerm, r.state.isLeader
 }
 
+func (r *RaftNode) GetCurrentTerm() int64 {
+	r.state.mu.Lock()
+	defer r.state.mu.Unlock()
+	return r.state.currentTerm
+}
+
+func (r *RaftNode) SetCurrentTerm(term int64) {
+	r.state.mu.Lock()
+	defer r.state.mu.Unlock()
+	r.state.currentTerm = term
+}
+
+func (r *RaftNode) GetVotedFor() int32 {
+	r.state.mu.Lock()
+	defer r.state.mu.Unlock()
+	return r.state.votedFor
+}
+
+func (r *RaftNode) SetVotedFor(id int32) {
+	r.state.mu.Lock()
+	defer r.state.mu.Unlock()
+	r.state.votedFor = id
+}
+
+func (r *RaftNode) GetLog() []log.LogEntry {
+	r.state.mu.Lock()
+	defer r.state.mu.Unlock()
+	l := make([]log.LogEntry, len(r.state.log))
+	copy(l, r.state.log)
+	return l
+}
+
+func (r *RaftNode) SetLog(log []log.LogEntry) {
+	r.state.mu.Lock()
+	defer r.state.mu.Unlock()
+	r.state.log = log
+}
+
 func (r *RaftNode) GetPeers() map[int]string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return r.peers
+}
+
+func (r *RaftNode) CopyPeers() map[int]string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	peers := make(map[int]string)
+	for k, v := range r.peers {
+		peers[k] = v
+	}
+	return peers
 }
 
 func (r *RaftNode) getElectionTimeoutMax() int {
@@ -258,56 +314,6 @@ func (r *RaftNode) getElectionTimeoutMin() int {
 
 func (r *RaftNode) getHeartbeatTimeout() int {
 	return r.heartbeatTimeout
-}
-
-// logEntry is a log entry.
-type logEntry struct {
-	// term is the term in which the entry was received by the leader.
-	term int64
-	// command is the command to be applied to the state machine.
-	command any
-}
-
-func (l *logEntry) String() string {
-	return fmt.Sprintf("term: %d, command: %s", l.term, l.command)
-}
-
-// LogEntries is a slice of logEntry.
-type LogEntries []logEntry
-
-func (l LogEntries) LastIndex() int64 {
-	return int64(len(l) - 1)
-}
-
-func (l LogEntries) Last() *logEntry {
-	if len(l) == 0 {
-		return nil
-	}
-	return &l[l.LastIndex()]
-}
-
-func (l LogEntries) LastTerm() int64 {
-	if len(l) == 0 {
-		return -1
-	}
-	return l.Last().term
-}
-
-func (l *logEntry) Equal(other *logEntry) bool {
-	return l.term == other.term && l.command == other.command
-}
-
-func (r *RaftNode) AppendEntry(cmd any) (int, int, bool) {
-	index := -1
-	term := -1
-	// if not leader return false
-	if !r.state.isLeader {
-		return -1, -1, false
-	}
-
-	// append entry to local log and respond after entry applied to state machine
-	return index, term, r.state.isLeader
-
 }
 
 func (r *RaftNode) getCurrentTermCallback() func() (int64, bool) {

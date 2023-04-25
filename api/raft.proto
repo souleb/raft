@@ -25,6 +25,12 @@ message VoteResponse {
   bool voteGranted = 2;
 }
 
+message Entry {
+  int64 serialNumber = 1;
+  int64 term = 2;
+  bytes command = 3;
+}
+
 // The raft AppendEntries RPC
 service AppendEntries {
   // AppendEntries is invoked by leaders to replicate log entries and
@@ -37,7 +43,7 @@ message AppendEntriesRequest {
   int32 leaderId = 2;
   int64 prevLogIndex = 3;
   int64 prevLogTerm = 4;
-  bytes entries = 5;
+  repeated Entry entries = 5;
   int64 leaderCommit = 6;
 }
 

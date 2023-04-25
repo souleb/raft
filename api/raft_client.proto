@@ -6,15 +6,17 @@ package api;
 // The ApplyEntry RPC.
 service ApplyEntry {
   // RequestVote is called by candidates to gather votes.
-  rpc ApplyEntry(Entry) returns (ApplyResponse) {}
+  rpc ApplyEntry(ApplyRequest) returns (ApplyResponse) {}
 }
 
-// The LogEntry to be applied.
-message Entry {
-  bytes command = 1;
+// The Apply request structure.
+message ApplyRequest {
+  int64 serialNumber = 1;
+  bytes entry = 2;
 }
 
 // The Apply response structure.
 message ApplyResponse {
-  bool success = 1;
+  int64 term = 1;
+  bool success = 2;
 }
