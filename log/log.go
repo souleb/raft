@@ -8,10 +8,12 @@ type LogEntry struct {
 	Term int64
 	// Command is the Command to be applied to the state machine.
 	Command []byte
-	// sn is the serial number of the entry.
+	// Sn is the serial number of the entry.
 	Sn int64
 }
 
+// String returns a string representation of the log entry.
+// We use a concatinated string of the Term and Command.
 func (l *LogEntry) String() string {
 	return fmt.Sprintf("Term: %d, Command: %s", l.Term, l.Command)
 }
@@ -20,16 +22,21 @@ func (l *LogEntry) String() string {
 type LogEntries []LogEntry
 
 func (l LogEntries) LastIndex() int64 {
+	if len(l) == 0 {
+		return -1
+	}
 	return int64(len(l) - 1)
 }
 
+// Last returns the last entry in the log.
 func (l LogEntries) Last() *LogEntry {
 	if len(l) == 0 {
 		return nil
 	}
-	return &l[l.LastIndex()]
+	return &l[len(l)-1]
 }
 
+// LastTerm returns the Term of the last entry in the log.
 func (l LogEntries) LastTerm() int64 {
 	if len(l) == 0 {
 		return -1
@@ -37,6 +44,7 @@ func (l LogEntries) LastTerm() int64 {
 	return l.Last().Term
 }
 
+// LastCommand returns the Command of the last entry in the log.
 func (l LogEntries) LastCommand() any {
 	if len(l) == 0 {
 		return nil
@@ -44,6 +52,7 @@ func (l LogEntries) LastCommand() any {
 	return l.Last().Command
 }
 
+// LastSN returns the SN of the last entry in the log.
 func (l LogEntries) LastSN() int64 {
 	if len(l) == 0 {
 		return -1
@@ -51,26 +60,43 @@ func (l LogEntries) LastSN() int64 {
 	return l.Last().Sn
 }
 
+// GetLogTerm returns the Term of the entry at the given index.
 func (l LogEntries) GetLogTerm(index int64) int64 {
 	return l[index].Term
 }
 
+// AppendEntry appends an entry to the log.
 func (l *LogEntries) AppendEntry(entry LogEntry) {
 	*l = append(*l, entry)
 }
 
+// AppendEntries appends entries to the log.
 func (l *LogEntries) AppendEntries(entries LogEntries) {
 	*l = append(*l, entries...)
 }
 
+// GetEntries returns the entries between the given indexes.
+func (l *LogEntries) GetEntries(minIndex, maxIndex int64) LogEntries {
+	if minIndex > maxIndex {
+		return nil
+	}
+	return (*l)[minIndex:maxIndex]
+}
+
+// GetEntriesFromIndex returns the entries from the given index.
 func (l *LogEntries) GetEntriesFromIndex(index int64) LogEntries {
+	if index > l.LastIndex() {
+		return nil
+	}
 	return (*l)[index:]
 }
 
+// GetLastLogIndexAndTerm returns the last log index and term.
 func (l *LogEntries) GetLastLogIndexAndTerm() (int64, int64) {
 	return l.LastIndex(), l.LastTerm()
 }
 
+// MatchEntry returns true if the given prevLogIndex and prevLogTerm match the log.
 func (l *LogEntries) MatchEntry(prevLogIndex, prevLogTerm int64) bool {
 	if l == nil || prevLogIndex > l.LastIndex() {
 		return false

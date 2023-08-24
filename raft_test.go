@@ -10,13 +10,19 @@ package raft
 
 import (
 	"context"
+	"fmt"
 	"math/rand"
 	"testing"
 	"time"
 
+	"log/slog"
+
+	pb "github.com/souleb/raft/api"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"golang.org/x/exp/slog"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
+	_ "google.golang.org/grpc/health"
 )
 
 const RaftElectionTimeout = 350 * time.Millisecond
@@ -204,22 +210,28 @@ func TestRaftNode_LogReplication(t *testing.T) {
 		}(node)
 	}
 
+	// set nodeAddrs
+	for _, port := range ports {
+		nodeAddrs = append(nodeAddrs, fmt.Sprintf("localhost:%d", port))
+	}
+
 	// check that there is a leader
 	_, err = checkLeaderIsElected(nodes)
 	require.NoError(t, err)
 
-	time.Sleep(50 * time.Millisecond)
-	term1, err := checkTerms(nodes)
+	// get a connection to the leader
+	c := `{"healthCheckConfig": {"serviceName": "quis.RaftLeader"}, "loadBalancingConfig": [ { "round_robin": {} } ]}`
+	target := fmt.Sprintf("%s:///%s", nodeScheme, nodeServiceName)
+	conn, err := grpc.Dial(target, grpc.WithDefaultServiceConfig(c),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithDefaultCallOptions(grpc.WaitForReady(true)))
+
 	require.NoError(t, err)
+	defer conn.Close()
 
-	time.Sleep(2 * RaftElectionTimeout)
-	term2, err := checkTerms(nodes)
-	require.NoError(t, err)
-
-	// check that terms doesn't change
-	require.Equal(t, term1, term2)
-
-	_, err = checkLeaderIsElected(nodes)
+	// create a client and apply an entry
+	client := pb.NewApplyEntryClient(conn)
+	_, err = client.ApplyEntry(ctx, &pb.ApplyRequest{Entry: []byte("hello"), SerialNumber: 1})
 	require.NoError(t, err)
 
 	// stop the nodes
@@ -227,25 +239,4 @@ func TestRaftNode_LogReplication(t *testing.T) {
 		err := node.Stop()
 		require.NoError(t, err)
 	}
-	
-	servers := 3
-	cfg := make_config(t, servers, false, false)
-	defer cfg.cleanup()
-
-	cfg.begin("Test (2B): basic agreement")
-
-	iters := 3
-	for index := 1; index < iters+1; index++ {
-		nd, _ := cfg.nCommitted(index)
-		if nd > 0 {
-			t.Fatalf("some have committed before Start()")
-		}
-
-		xindex := cfg.one(index*100, servers, false)
-		if xindex != index {
-			t.Fatalf("got index %v but expected %v", xindex, index)
-		}
-	}
-
-	cfg.end()
 }

@@ -11,40 +11,63 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-type SendAppendEntriesFunc func(term int64, leaderId int32, prevLogIndex int64, prevLogTerm int64, entries []byte, leaderCommit int64, responseChan chan RPCResponse)
-type SendVoteRequestFunc func(term int64, candidateID int32, lastLogIndex int64, lastLogTerm int64, responseChan chan RPCResponse)
+// type SendAppendEntriesFunc func(term int64, leaderId int32, prevLogIndex int64, prevLogTerm int64, entries []byte, leaderCommit int64, responseChan chan RPCResponse)
+// type SendVoteRequestFunc func(term int64, candidateID int32, lastLogIndex int64, lastLogTerm int64, responseChan chan RPCResponse)
 
+// AppendEntries is a message sent to the a raft node to append entries to the log.
 type AppendEntries struct {
-	Term         int64
-	LeaderId     int32
+	// Term is the observed term of the leader.
+	Term int64
+	// LeaderId is the ID of the leader.
+	LeaderId int32
+	// PrevLogIndex is the index of the log entry immediately preceding the new ones.
 	PrevLogIndex int64
-	PrevLogTerm  int64
-	Entries      log.LogEntries
+	// PrevLogTerm is the term of the log entry immediately preceding the new ones.
+	PrevLogTerm int64
+	// Entries are the log entries to append.
+	Entries log.LogEntries
+	// LeaderCommit is the leader's commit index.
 	LeaderCommit int64
+	// ResponseChan is the channel to send the response to.
 	ResponseChan chan RPCResponse
 }
 
+// VoteRequest is a message sent to the raft node to request a vote.
 type VoteRequest struct {
-	Term         int64
-	CandidateId  int32
+	// Term is the candidate's term.
+	Term int64
+	// CandidateId is the candidate requesting the vote.
+	CandidateId int32
+	// LastLogIndex is the index of the candidate's last log entry.
 	LastLogIndex int64
-	LastLogTerm  int64
+	// LastLogTerm is the term of the candidate's last log entry.
+	LastLogTerm int64
+	// ResponseChan is the channel to send the response to.
 	ResponseChan chan RPCResponse
 }
 
+// ApplyRequest is a message sent to the raft node to apply a command.
 type ApplyRequest struct {
-	Sn           int64
-	Command      []byte
+	// Sn is the serial number of the command.
+	Sn int64
+	// Command is the command to apply.
+	Command []byte
+	// ResponseChan is the channel to send the response to.
 	ResponseChan chan RPCResponse
 }
 
-// requestVoteMsg is a message sent to the raft node to request a vote.
+// RPCResponse is a response to an RPC request.
 type RPCResponse struct {
-	Term     int64
+	// Term is the current term of the node.
+	Term int64
+	// Response is the response to the request. It is true if the request was
+	// accepted.
 	Response bool
 }
 
-// RequestVote is called by candidates to gather votes.
+// RequestVote is called by candidates to gather votes. It receives a vote request
+// and sends a response. If returns early if the request term is less than the
+// current term.
 func (s *RPCServer) RequestVote(ctx context.Context, in *pb.VoteRequest) (*pb.VoteResponse, error) {
 	term, _ := s.getStateFunc()
 	if in.GetTerm() < term {
@@ -68,6 +91,9 @@ func (s *RPCServer) RequestVote(ctx context.Context, in *pb.VoteRequest) (*pb.Vo
 	return &pb.VoteResponse{Term: response.Term, VoteGranted: response.Response}, nil
 }
 
+// AppendEntries is called by leaders to replicate log entries. It receives an
+// append entries request and sends a response. If returns early if the request
+// term is less than the current term.
 func (s *RPCServer) AppendEntries(ctx context.Context, in *pb.AppendEntriesRequest) (*pb.AppendEntriesResponse, error) {
 	term, _ := s.getStateFunc()
 	if in.GetTerm() < term {
@@ -103,7 +129,9 @@ func (s *RPCServer) AppendEntries(ctx context.Context, in *pb.AppendEntriesReque
 	return &pb.AppendEntriesResponse{Term: response.Term, Success: response.Response}, nil
 }
 
-// SendRequestVote sends a request vote to a node.
+// SendRequestVote sends a request vote to a node. The node is identified by its
+// ID. It returns an error if the node is not connected and marks the node as
+// dead.
 func (s *RPCServer) SendRequestVote(ctx context.Context, node int, req VoteRequest) (*RPCResponse, error) {
 	if s.isPeerDead(node) {
 		return nil, fmt.Errorf("cannot send request vote to node %d: node is dead", node)
@@ -127,7 +155,9 @@ func (s *RPCServer) SendRequestVote(ctx context.Context, node int, req VoteReque
 	return &RPCResponse{resp.GetTerm(), resp.GetVoteGranted()}, nil
 }
 
-// sendRequestVote sends a request vote to a node.
+// SendAppendEntries sends an append entries to a node. The node is identified by
+// its ID. It returns an error if the node is not connected and marks the node as
+// dead.
 func (s *RPCServer) SendAppendEntries(ctx context.Context, node int, req AppendEntries) (*RPCResponse, error) {
 	if s.isPeerDead(node) {
 		return nil, fmt.Errorf("cannot send append entries to node %d: node is dead", node)
@@ -162,7 +192,9 @@ func (s *RPCServer) SendAppendEntries(ctx context.Context, node int, req AppendE
 	return &RPCResponse{resp.GetTerm(), resp.GetSuccess()}, nil
 }
 
-// RequestVote is called by candidates to gather votes.
+// ApplyEntry is called by clients to apply a command. It receives an apply entry
+// request and sends a response. It blocks until the command is committed.
+// If the node is not the leader, it returns an error.
 func (s *RPCServer) ApplyEntry(ctx context.Context, in *pb.ApplyRequest) (*pb.ApplyResponse, error) {
 	reply := make(chan RPCResponse)
 	s.applyEntryRPCChan <- ApplyRequest{

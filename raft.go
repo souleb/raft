@@ -6,10 +6,11 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"log/slog"
+
 	"github.com/souleb/raft/log"
 	"github.com/souleb/raft/server"
 	"github.com/souleb/raft/storage"
-	"golang.org/x/exp/slog"
 )
 
 const (
@@ -21,6 +22,8 @@ const (
 	defaultHeartbeatTimeout = 50
 	// defaultTimeout is the timeout in milliseconds.
 	defaultTimeout = 100
+	// commitChanSize is the size of the commit channel.
+	commitChanSize = 100
 )
 
 // OptionsFn is a function that sets an option.
@@ -67,6 +70,11 @@ type RaftNode struct {
 	appendChan     chan server.AppendEntries
 	voteChan       chan server.VoteRequest
 	applyEntryChan chan server.ApplyRequest
+	// commitIndexChan is a channel that signals when the commit index has been updated.
+	commitIndexChan chan struct{}
+	// commitChan is a channel that receives committed entries from the RaftNode to be applied to the state machine.
+	// It is buffered to allow the RaftNode to continue committing entries while the state machine is busy.
+	commitChan chan log.LogEntry
 	// errChan is a channel that receives errors from the RaftNode.
 	errChan chan error
 	// Lock to protect shared access to this peer's fields
@@ -98,16 +106,22 @@ func WithTimeout(timeout int) OptionsFn {
 }
 
 // New creates a new RaftNode.
-func New(peers map[int]string, id int32, port uint16, logger *slog.Logger, opts ...OptionsFn) (*RaftNode, error) {
+func New(peers map[int]string, id int32, port uint16, commitChan chan log.LogEntry, logger *slog.Logger, opts ...OptionsFn) (*RaftNode, error) {
 	r := &RaftNode{
-		peers:    peers,
-		id:       id,
-		leaderID: -1,
-		logger:   logger,
+		peers:           peers,
+		id:              id,
+		leaderID:        -1,
+		commitChan:      commitChan,
+		commitIndexChan: make(chan struct{}),
+		logger:          logger,
 	}
 
 	for _, opt := range opts {
 		opt(r.Options)
+	}
+
+	if r.commitChan == nil {
+		return nil, fmt.Errorf("a commit channel must be provided")
 	}
 
 	if r.logger == nil {
@@ -155,7 +169,7 @@ func New(peers map[int]string, id int32, port uint16, logger *slog.Logger, opts 
 	s, err := server.New(int(r.id), port,
 		server.WithHeartbeatTimeout(r.heartbeatTimeout),
 		server.WithLogger(r.logger),
-		server.WithGetCurrentTermFunc(r.getCurrentTermCallback()),
+		server.WithGetStateFunc(r.getCurrentTermCallback()),
 		server.WithTimeout(r.timeout),
 	)
 
@@ -185,6 +199,7 @@ func (r *RaftNode) Run(ctx context.Context, secure bool) error {
 		}
 
 		go r.runStateMachine(ctx)
+		go r.commitEntries(ctx)
 		r.start.Lock()
 		r.started = true
 		r.start.Unlock()
@@ -234,6 +249,14 @@ func (r *RaftNode) runStateMachine(ctx context.Context) {
 
 func (r *RaftNode) GetID() int32 {
 	return atomic.LoadInt32(&r.id)
+}
+
+func (r *RaftNode) setLeaderID(id int32) {
+	atomic.StoreInt32(&r.leaderID, id)
+}
+
+func (r *RaftNode) GetLeaderID() int32 {
+	return atomic.LoadInt32(&r.leaderID)
 }
 
 func (r *RaftNode) IsLeader() bool {

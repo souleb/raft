@@ -9,7 +9,7 @@ import (
 
 	grpc_retry "github.com/grpc-ecosystem/go-grpc-middleware/retry"
 	pb "github.com/souleb/raft/api"
-	"golang.org/x/exp/slog"
+	"log/slog"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
@@ -27,19 +27,40 @@ const (
 	leaderHealthService = "quis.RaftLeader"
 )
 
-type Server interface {
+// Sender is the interface that wraps the basic methods for sending RPCs to
+// other raft nodes.
+type Sender interface {
+	// SendAppendEntries sends an AppendEntries RPC to the given node.
 	SendAppendEntries(ctx context.Context, node int, req AppendEntries) (*RPCResponse, error)
+	// SendRequestVote sends a VoteRequest RPC to the given node.
 	SendRequestVote(ctx context.Context, node int, req VoteRequest) (*RPCResponse, error)
+}
+
+// Server is the interface that wraps the basic methods for communicating with
+// with a raft node.
+type Server interface {
+	Sender
+	// Run starts the server.
 	Run(ctx context.Context, peers map[int]string, testMode bool) error
+	// SetVoteRPCChan sets the channel to send vote requests to the fsm.
 	SetVoteRPCChan(voteChan chan VoteRequest) Server
+	// SetAppendEntryRPCChan sets the channel to send entries to replicate to the fsm.
 	SetAppendEntryRPCChan(appendEntriesChan chan AppendEntries) Server
+	// SetApplyEntryRPCChan sets the channel to send entries to apply to the fsm.
 	SetApplyEntryRPCChan(applyEntryChan chan ApplyRequest) Server
+	// Stop stops the server.
 	Stop()
 }
 
+var _ Server = (*RPCServer)(nil)
+
+// getStateFunc is a function that returns the current term and whether this
+// peer is the leader. This function is used to report the health of the leader
+// to the health server.
 type getStateFunc func() (int64, bool)
 
 type options struct {
+	// getStateFunc is a function that returns the current term and whether this
 	getStateFunc getStateFunc
 	// heartbeatTimeout(ms) is used to send heartbeat to other peers
 	heartbeatTimeout int
@@ -51,6 +72,8 @@ type options struct {
 
 type OptFunc func(o *options)
 
+// RPCServer is a RPC server that handles all the RPC communications.
+// It implements the Server interface and uses the grpc protocol.
 type RPCServer struct {
 	pb.UnimplementedAppendEntriesServer
 	pb.UnimplementedVoteServer
@@ -70,30 +93,35 @@ type RPCServer struct {
 	mu sync.Mutex
 }
 
+// WithHeartbeatTimeout sets the heartbeat timeout.
 func WithHeartbeatTimeout(heartbeatTimeout int) OptFunc {
 	return func(o *options) {
 		o.heartbeatTimeout = heartbeatTimeout
 	}
 }
 
+// WithTimeout sets the timeout.
 func WithTimeout(timeout int) OptFunc {
 	return func(o *options) {
 		o.timeout = timeout
 	}
 }
 
-func WithGetCurrentTermFunc(g getStateFunc) OptFunc {
+// WithGetCStateFunc sets the function to get the current term.
+func WithGetStateFunc(g getStateFunc) OptFunc {
 	return func(o *options) {
 		o.getStateFunc = g
 	}
 }
 
+// WithLogger sets the logger.
 func WithLogger(logger *slog.Logger) OptFunc {
 	return func(o *options) {
 		o.logger = logger
 	}
 }
 
+// New returns a new RPCServer.
 func New(id int, port uint16, opts ...OptFunc) (*RPCServer, error) {
 	s := &RPCServer{
 		id:            id,
@@ -119,21 +147,25 @@ func New(id int, port uint16, opts ...OptFunc) (*RPCServer, error) {
 	return s, nil
 }
 
+// SetApplyEntryRPCChan sets the channel to send entries to apply to the fsm.
 func (s *RPCServer) SetApplyEntryRPCChan(applyEntryChan chan ApplyRequest) Server {
 	s.applyEntryRPCChan = applyEntryChan
 	return s
 }
 
+// SetVoteRPCChan sets the channel to send vote requests to the fsm.
 func (s *RPCServer) SetVoteRPCChan(voteChan chan VoteRequest) Server {
 	s.voteRPCChan = voteChan
 	return s
 }
 
+// SetAppendEntryRPCChan sets the channel to send entries to replicate to the fsm.
 func (s *RPCServer) SetAppendEntryRPCChan(appendEntriesChan chan AppendEntries) Server {
 	s.appendEntriesRPCChan = appendEntriesChan
 	return s
 }
 
+// Run starts the server.
 func (s *RPCServer) Run(ctx context.Context, peers map[int]string, secure bool) error {
 	// check if channels are set
 	if s.voteRPCChan == nil || s.appendEntriesRPCChan == nil || s.applyEntryRPCChan == nil {
@@ -182,6 +214,7 @@ func (s *RPCServer) setPeerAlive(index int) {
 	s.deadPeersConn[index] = false
 }
 
+// GetPeerConn returns a grpc connection to be used to send RPCs to the peer.
 func (s *RPCServer) GetPeerConn(index int) *grpc.ClientConn {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -236,6 +269,7 @@ func (s *RPCServer) start() error {
 	s.grpcServer = grpc.NewServer()
 	pb.RegisterAppendEntriesServer(s.grpcServer, s)
 	pb.RegisterVoteServer(s.grpcServer, s)
+	pb.RegisterApplyEntryServer(s.grpcServer, s)
 
 	if s.hs == nil {
 		// setup health server
@@ -249,6 +283,7 @@ func (s *RPCServer) start() error {
 	return nil
 }
 
+// Stop stops the server.
 func (s *RPCServer) Stop() {
 	if s.hs != nil {
 		s.hs.Shutdown()
@@ -256,7 +291,9 @@ func (s *RPCServer) Stop() {
 	s.grpcServer.Stop()
 }
 
-func (s *RPCServer) Observe(state bool) {
+// Notify is used to observe the state of the node. It implements the Observer
+// interface.
+func (s *RPCServer) Notify(state bool) {
 	s.observerChan <- state
 }
 

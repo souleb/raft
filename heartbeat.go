@@ -5,9 +5,10 @@ import (
 	"sync"
 	"time"
 
+	"log/slog"
+
 	"github.com/souleb/raft/errors"
 	"github.com/souleb/raft/server"
-	"golang.org/x/exp/slog"
 )
 
 type heartbeat struct {
@@ -37,7 +38,6 @@ func (h *heartbeat) heartbeat(ctx context.Context) {
 	wg := sync.WaitGroup{}
 	h.send(ctx, &wg, prevLogIndex, prevLogTerm)
 
-	// start a ticker to send heartbeat periodically
 	ticker := time.NewTicker(time.Duration(h.r.getHeartbeatTimeout()) * time.Millisecond)
 
 	for {

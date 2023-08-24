@@ -7,14 +7,35 @@ import (
 	"testing"
 	"time"
 
+	"log/slog"
+
 	"github.com/phayes/freeport"
-	"golang.org/x/exp/slog"
+	"github.com/souleb/raft/log"
+	"google.golang.org/grpc/resolver"
 )
 
-var logger *slog.Logger
+const (
+	nodeScheme      = "raft"
+	nodeServiceName = "nodes.raft.grpc.io"
+)
+
+var (
+	logger    *slog.Logger
+	nodeAddrs = []string{}
+)
+
+func TestMain(m *testing.M) {
+	opts := &slog.HandlerOptions{
+		Level: slog.LevelDebug,
+	}
+	textHandler := slog.NewTextHandler(os.Stdout, opts)
+	logger = slog.New(textHandler)
+	os.Exit(m.Run())
+}
 
 func nodeSetup(peers map[int]string, id int32, logger *slog.Logger) (*RaftNode, error) {
-	node, err := New(peers, id, uint16(id), logger)
+	commitChan := make(chan log.LogEntry, commitChanSize)
+	node, err := New(peers, id, uint16(id), commitChan, logger)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create a new node: %w", err)
 	}
@@ -175,11 +196,38 @@ func startNextNode(ctx context.Context, nodes []*RaftNode, node int) error {
 	return nodes[nextIndex].Run(ctx, false)
 }
 
-func TestMain(m *testing.M) {
-	opts := slog.HandlerOptions{
-		Level: slog.LevelDebug,
+type nodeResolverBuilder struct{}
+
+func (*nodeResolverBuilder) Build(target resolver.Target, cc resolver.ClientConn, opts resolver.BuildOptions) (resolver.Resolver, error) {
+	r := &nodeResolver{
+		target: target,
+		cc:     cc,
+		addrsStore: map[string][]string{
+			nodeServiceName: nodeAddrs,
+		},
 	}
-	textHandler := opts.NewTextHandler(os.Stdout)
-	logger = slog.New(textHandler)
-	os.Exit(m.Run())
+	r.start()
+	return r, nil
+}
+func (*nodeResolverBuilder) Scheme() string { return nodeScheme }
+
+type nodeResolver struct {
+	target     resolver.Target
+	cc         resolver.ClientConn
+	addrsStore map[string][]string
+}
+
+func (r *nodeResolver) start() {
+	addrStrs := r.addrsStore[r.target.Endpoint()]
+	addrs := make([]resolver.Address, len(addrStrs))
+	for i, s := range addrStrs {
+		addrs[i] = resolver.Address{Addr: s}
+	}
+	r.cc.UpdateState(resolver.State{Addresses: addrs})
+}
+func (*nodeResolver) ResolveNow(o resolver.ResolveNowOptions) {}
+func (*nodeResolver) Close()                                  {}
+
+func init() {
+	resolver.Register(&nodeResolverBuilder{})
 }

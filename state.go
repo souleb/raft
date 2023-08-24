@@ -19,7 +19,7 @@ type state struct {
 	// index of highest log entry known to be committed (initialized to 0, increases monotonically).
 	commitIndex int64
 	// index of highest log entry applied to state machine (initialized to 0, increases monotonically).
-	lastApplied int
+	lastApplied int64
 	// log entries; each entry contains command for state machine, and term when entry was received by leader (first index is 1)
 	log log.LogEntries
 	// for each server, index of the next log entry to send to that server (initialized to leader last log index + 1)
@@ -47,7 +47,7 @@ func (s *state) resetElectionFields(term int64, leader bool) {
 	if leader {
 		s.isLeader = false
 		for _, o := range s.observers {
-			o.Observe(false)
+			o.Notify(false)
 		}
 	}
 }
@@ -81,35 +81,35 @@ func (s *state) setLeader(leader bool) {
 	defer s.mu.Unlock()
 	s.isLeader = leader
 	for _, o := range s.observers {
-		o.Observe(leader)
+		o.Notify(leader)
 	}
 }
 
-func (s *state) getNextIndex(peer int) int64 {
+func (s *state) getPeerNextIndex(peer int) int64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.nextIndex[peer]
 }
 
-func (s *state) decrementNextIndex(peer int) {
+func (s *state) decrementPeerNextIndex(peer int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.nextIndex[peer]--
 }
 
-func (s *state) updateNextIndex(peer int, index int64) {
+func (s *state) updatePeerNextIndex(peer int, index int64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.nextIndex[peer] = index
 }
 
-func (s *state) getMatchIndex(peer int) int64 {
+func (s *state) getPeerMatchIndex(peer int) int64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.matchIndex[peer]
 }
 
-func (s *state) updateMatchIndex(peer int, index int64) {
+func (s *state) updatePeerMatchIndex(peer int, index int64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.matchIndex[peer] = index
@@ -121,10 +121,16 @@ func (s *state) appendEntry(entry log.LogEntry) {
 	s.log.AppendEntry(entry)
 }
 
-func (s *state) getEntriesFromIndex(index int64) log.LogEntries {
+func (s *state) getEntriesFromNextIndex(peer int) log.LogEntries {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.log.GetEntriesFromIndex(index)
+	return s.log.GetEntriesFromIndex(s.nextIndex[peer])
+}
+
+func (s *state) getEntries(minIndex, maxIndex int64) log.LogEntries {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.log.GetEntries(minIndex, maxIndex)
 }
 
 func (s *state) getCommitIndex() int64 {
@@ -148,7 +154,22 @@ func (s *state) getLastLogIndexAndTerm() (int64, int64) {
 func (s *state) matchEntry(prevLogIndex, prevLogTerm int64) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if prevLogIndex == -1 {
+		return true
+	}
 	return s.log.MatchEntry(prevLogIndex, prevLogTerm)
+}
+
+func (s *state) getLastApplied() int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lastApplied
+}
+
+func (s *state) setLastApplied(index int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.lastApplied = index
 }
 
 func (s *state) getLastIndex() int64 {
@@ -169,36 +190,35 @@ func (s *state) getLastSN() int64 {
 	return s.log.LastSN()
 }
 
-func (s *state) initLog() {
+func (s *state) initLog() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	// make sure index 0 is always empty
-	if s.log.Last() == nil {
-		s.log.AppendEntry(log.LogEntry{Term: 0, Command: nil, Sn: -1})
-	}
-}
-
-func (s *state) initNextIndexAndMatchIndex() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.lastApplied = 0
 	for i := range s.nextIndex {
-		s.nextIndex[i] = s.log.LastIndex() + 1
+		s.nextIndex[i] = s.lastApplied + 1
 		s.matchIndex[i] = 0
 	}
+	// If the log is empty, add a dummy entry at index 0.
+	if s.log.LastIndex() == -1 {
+		s.log.AppendEntry(log.LogEntry{})
+	}
+	return nil
 }
 
-func (s *state) updateCommitIndex(index int64) {
+func (s *state) updateCommitIndex(commitIndex int64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	c := 0
-	if index > s.commitIndex {
-		for _, match := range s.matchIndex {
-			if match >= index {
-				c++
+	for i := commitIndex + 1; i <= s.log.LastIndex(); i++ {
+		if s.log.GetLogTerm(i) == s.currentTerm {
+			c := 1
+			for _, match := range s.matchIndex {
+				if match >= i {
+					c++
+				}
 			}
-		}
-		if c >= len(s.matchIndex)/2 && s.getLogTerm(index) == s.currentTerm {
-			s.commitIndex = index
+			if c > len(s.matchIndex)/2 {
+				s.commitIndex = i
+			}
 		}
 	}
 }
