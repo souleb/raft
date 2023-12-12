@@ -34,9 +34,8 @@ func (h *heartbeat) heartbeat(ctx context.Context) {
 	h.logger.Debug("sending first heartbeat", slog.Int("id", int(h.r.GetID())),
 		slog.Int("currentTerm", int(h.r.state.getCurrentTerm())),
 		slog.String("state", "leader"))
-	prevLogIndex, prevLogTerm := h.r.state.getLastLogIndexAndTerm()
 	wg := sync.WaitGroup{}
-	h.send(ctx, &wg, prevLogIndex, prevLogTerm)
+	h.send(ctx, &wg)
 
 	ticker := time.NewTicker(time.Duration(h.r.getHeartbeatTimeout()) * time.Millisecond)
 
@@ -46,8 +45,7 @@ func (h *heartbeat) heartbeat(ctx context.Context) {
 			h.logger.Debug("tick!, sending heartbeat", slog.Int("id", int(h.r.GetID())),
 				slog.Int("currentTerm", int(h.r.state.getCurrentTerm())),
 				slog.String("state", "leader"))
-			prevLogIndex, prevLogTerm := h.r.state.getLastLogIndexAndTerm()
-			h.send(ctx, &wg, prevLogIndex, prevLogTerm)
+			h.send(ctx, &wg)
 			// if the term is greater than the current term, send the response to the leader
 			ticker.Reset(time.Duration(h.r.heartbeatTimeout) * time.Millisecond)
 		case <-ctx.Done():
@@ -57,17 +55,19 @@ func (h *heartbeat) heartbeat(ctx context.Context) {
 	}
 }
 
-func (h *heartbeat) send(ctx context.Context, wg *sync.WaitGroup, prevLogIndex, prevLogTerm int64) {
+func (h *heartbeat) send(ctx context.Context, wg *sync.WaitGroup) {
 	req := server.AppendEntries{
 		Term:         h.r.state.getCurrentTerm(),
 		LeaderId:     h.r.GetID(),
-		PrevLogIndex: prevLogIndex,
-		PrevLogTerm:  prevLogTerm,
+		LeaderCommit: h.r.state.getCommitIndex(),
 	}
-	for index := range h.r.GetPeers() {
+	for peer := range h.r.GetPeers() {
+		index := h.r.state.getPeerNextIndex(peer)
+		req.PrevLogIndex = index - 1
+		req.PrevLogTerm = h.r.state.getLogTerm(req.PrevLogIndex)
 		wg.Add(1)
-		go func(index int) {
-			resp, err := h.r.RPCServer.SendAppendEntries(ctx, index, req)
+		go func(peer int, req server.AppendEntries) {
+			resp, err := h.r.RPCServer.SendAppendEntries(ctx, peer, req)
 			if err != nil {
 				if e, ok := err.(*errors.Error); !ok || e.StatusCode != errors.Canceled {
 					h.logger.Error("while sending heartbeat rpc", slog.String("error", err.Error()))
@@ -81,6 +81,6 @@ func (h *heartbeat) send(ctx context.Context, wg *sync.WaitGroup, prevLogIndex, 
 				h.respChan <- resp
 			}
 			wg.Done()
-		}(index)
+		}(peer, req)
 	}
 }

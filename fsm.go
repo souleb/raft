@@ -78,16 +78,29 @@ func (r *RaftNode) follower(ctx context.Context) stateFn {
 }
 
 func (r *RaftNode) handleAppendEntries(req server.AppendEntries) {
+	ok := r.state.matchEntry(req.PrevLogIndex, req.PrevLogTerm)
+
+	// check if commit index needs to be updated
+	if req.LeaderCommit > r.state.getCommitIndex() && ok {
+		r.notifyCommitUpdate(req)
+	}
+
+	// if heartbeat, just repond success and return
 	if len(req.Entries) == 0 {
 		r.logger.Debug("received heartbeat", slog.Int("id", int(r.GetID())), slog.Int("currentTerm",
 			int(r.state.getCurrentTerm())), slog.Int("term", int(req.Term)), slog.String("state", "follower"))
+
 		req.ResponseChan <- server.RPCResponse{
 			Term:     r.state.getCurrentTerm(),
 			Response: true,
 		}
 		return
 	}
-	ok := r.state.matchEntry(req.PrevLogIndex, req.PrevLogTerm)
+
+	r.logger.Debug("received appendEntries", slog.Int("id", int(r.GetID())), slog.Int("currentTerm",
+		int(r.state.getCurrentTerm())), slog.Int("term", int(req.Term)), slog.Int("prevLogIndex",
+		int(req.PrevLogIndex)), slog.Int("prevLogTerm", int(req.PrevLogTerm)), slog.String("state", "follower"))
+
 	if !ok {
 		r.logger.Debug("log mismatch", slog.Int("id", int(r.GetID())), slog.Int("currentTerm",
 			int(r.state.getCurrentTerm())), slog.Int("term", int(req.Term)), slog.Int("prevLogIndex",
@@ -100,13 +113,6 @@ func (r *RaftNode) handleAppendEntries(req server.AppendEntries) {
 	}
 
 	r.state.storeEntriesFromIndex(r.state.getLastIndex()+1, req.Entries)
-	if req.LeaderCommit > r.state.getCommitIndex() {
-		r.state.setCommitIndex(minValue(req.LeaderCommit, r.state.getLastIndex()))
-		r.logger.Debug("committing entries", slog.Int("id", int(r.GetID())), slog.Int("currentTerm",
-			int(r.state.getCurrentTerm())), slog.Int("term", int(req.Term)), slog.Int("commitIndex",
-			int(r.state.getCommitIndex())), slog.String("state", "follower"))
-		r.commitIndexChan <- struct{}{}
-	}
 	req.ResponseChan <- server.RPCResponse{
 		Term:     r.state.getCurrentTerm(),
 		Response: true,
@@ -201,6 +207,7 @@ func (r *RaftNode) leader(ctx context.Context) stateFn {
 	r.logger.Debug("entering leader state", slog.Int("id", int(r.GetID())))
 	respChan := make(chan *server.RPCResponse)
 	ctx, cancel := context.WithCancel(ctx)
+	r.state.initLeaderVolatileState(r.peers)
 	wg := sync.WaitGroup{}
 	newHeartbeat(r, respChan, r.logger).start(ctx)
 	for {
@@ -226,10 +233,10 @@ func (r *RaftNode) leader(ctx context.Context) stateFn {
 				req.ResponseChan <- server.RPCResponse{Term: r.state.getCurrentTerm(), Response: false}
 				break
 			}
-			prevLogIndex, prevLogTerm := r.state.getLastLogIndexAndTerm()
-			r.state.appendEntry(log.LogEntry{Term: r.state.getCurrentTerm(), Command: req.Command, Sn: req.Sn})
+			entry := log.LogEntry{Term: r.state.getCurrentTerm(), Command: req.Command, Sn: req.Sn}
+			r.state.appendEntry(entry)
 			// send the new entry to all peers
-			responseTerm, commited := r.appendEntry(ctx, &wg, prevLogIndex, prevLogTerm)
+			responseTerm, commited := r.appendEntry(ctx, &wg)
 			if responseTerm > r.state.getCurrentTerm() {
 				req.ResponseChan <- server.RPCResponse{Term: responseTerm, Response: false}
 				r.prepareStateRevert(responseTerm, true, cancel, &wg)
@@ -309,31 +316,30 @@ func (r *RaftNode) prepareStateRevert(term int64, leader bool, cancel context.Ca
 	wg.Wait()
 }
 
-func (r *RaftNode) appendEntry(ctx context.Context, wg *sync.WaitGroup, prevLogIndex, prevLogTerm int64) (int64, bool) {
+func (r *RaftNode) appendEntry(ctx context.Context, wg *sync.WaitGroup) (int64, bool) {
 	currentTerm := r.state.getCurrentTerm()
 	currentCommitIndex := r.state.getCommitIndex()
 	respChan := make(chan *server.RPCResponse, len(r.GetPeers()))
 	req := server.AppendEntries{
 		Term:         currentTerm,
 		LeaderId:     r.GetID(),
-		PrevLogIndex: prevLogIndex,
-		PrevLogTerm:  prevLogTerm,
 		LeaderCommit: r.state.getCommitIndex(),
 	}
 
-	for index := range r.GetPeers() {
-		if r.state.getLastIndex() >= r.state.getPeerNextIndex(index) {
+	for peer := range r.GetPeers() {
+		index := r.state.getPeerNextIndex(peer)
+		req.PrevLogIndex = index - 1
+		req.PrevLogTerm = r.state.getLogTerm(req.PrevLogIndex)
+		if r.state.getLastIndex() >= index {
 			wg.Add(1)
-			go func(index int, req server.AppendEntries) {
-				req.Entries = r.state.getEntriesFromNextIndex(index)
+			go func(peer int, index int64, req server.AppendEntries) {
+				req.Entries = r.state.getEntriesFromIndex(index)
 				for {
-					resp, err := r.RPCServer.SendAppendEntries(ctx, index, req)
+					resp, err := r.RPCServer.SendAppendEntries(ctx, peer, req)
 					if err != nil {
 						if e, ok := err.(*errors.Error); !ok || e.StatusCode != errors.Canceled {
 							r.logger.Error("while sending appendEntries rpc", slog.String("error", err.Error()))
 							time.Sleep(time.Duration(r.heartbeatTimeout) * time.Millisecond)
-							// TODO: Should we timeout at some point?
-							continue
 						}
 						respChan <- &server.RPCResponse{Term: r.state.getCurrentTerm(), Response: false}
 						wg.Done()
@@ -351,14 +357,14 @@ func (r *RaftNode) appendEntry(ctx context.Context, wg *sync.WaitGroup, prevLogI
 
 					if !resp.Response && resp.Term <= r.state.getCurrentTerm() {
 						// if fails because of inconsistency, decrement nextIndex and retry
-						r.state.decrementPeerNextIndex(index)
+						r.state.decrementPeerNextIndex(peer)
 						continue
 					}
 
 					commitIndex := r.state.getCommitIndex()
 					if resp.Response && resp.Term == r.state.getCurrentTerm() {
-						r.state.updatePeerMatchIndex(index, r.state.getLastIndex())
-						r.state.updatePeerNextIndex(index, r.state.getLastIndex()+1)
+						r.state.updatePeerMatchIndex(peer, r.state.getLastIndex())
+						r.state.updatePeerNextIndex(peer, r.state.getLastIndex()+1)
 						r.state.updateCommitIndex(commitIndex)
 					}
 
@@ -373,24 +379,38 @@ func (r *RaftNode) appendEntry(ctx context.Context, wg *sync.WaitGroup, prevLogI
 					wg.Done()
 					return
 				}
-			}(index, req)
+			}(peer, index, req)
 		}
 	}
 
 	responseCount := 0
 	for resp := range respChan {
-		if resp.Term > r.state.getCurrentTerm() || !resp.Response {
+		// if the term is greater than the current term, return the term and false
+		// so that the state can be reverted to follower
+		if resp.Term > r.state.getCurrentTerm() {
 			return resp.Term, false
 		}
+		// successful or not, we increment the response count
 		responseCount++
+		// if we get a majority of responses, we can return if the commit index has been updated
 		if responseCount >= len(r.GetPeers())/2 {
 			// if currentCommitIndex has been updated, then we can return true
 			if r.state.getCommitIndex() > currentCommitIndex {
 				return currentTerm, true
 			}
 		}
+		if responseCount >= len(r.GetPeers()) {
+			// if we get responses from all peers, it means that we have no majority
+			// so we can return false
+			break
+		}
 	}
 	return currentTerm, false
+}
+
+func (r *RaftNode) notifyCommitUpdate(req server.AppendEntries) {
+	r.state.setCommitIndex(minValue(req.LeaderCommit, r.state.getLastIndex()))
+	r.commitIndexChan <- struct{}{}
 }
 
 func (r *RaftNode) commitEntries(ctx context.Context) {
@@ -399,17 +419,24 @@ func (r *RaftNode) commitEntries(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-r.commitIndexChan:
-			term := r.state.getCurrentTerm()
-			lastApplied := r.state.getLastApplied()
 			var entries log.LogEntries
 			if r.state.getCommitIndex() > r.state.getLastApplied() {
 				entries = r.state.getEntries(r.state.lastApplied+1, r.state.getCommitIndex()+1)
 				r.state.setLastApplied(r.state.getCommitIndex())
 			}
-			r.logger.Debug("committing entries", slog.Int("id", int(r.GetID())), slog.Int("currentTerm", int(term)),
-				slog.Int("lastApplied", int(lastApplied)), slog.Int("commitIndex", int(r.state.getCommitIndex())))
+			if len(entries) > 0 {
+				r.logger.Debug("committing entries", slog.Int("id", int(r.GetID())), slog.Int("currentTerm",
+					int(r.state.getCurrentTerm())), slog.Int("commitIndex",
+					int(r.state.getCommitIndex())), slog.String("state", "follower"))
+			}
 			for _, entry := range entries {
-				r.commitChan <- entry
+				select {
+				case r.CommitChan <- entry:
+				default:
+					r.logger.Error("commit channel is full, dropping entry", slog.Int("id", int(r.GetID())),
+						slog.Int("currentTerm", int(r.state.getCurrentTerm())), slog.Int("commitIndex",
+							int(r.state.getCommitIndex())), slog.String("state", "follower"))
+				}
 			}
 		}
 	}

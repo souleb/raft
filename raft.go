@@ -22,8 +22,8 @@ const (
 	defaultHeartbeatTimeout = 50
 	// defaultTimeout is the timeout in milliseconds.
 	defaultTimeout = 100
-	// commitChanSize is the size of the commit channel.
-	commitChanSize = 100
+	// defaultBufferSize is the default size of the commit channel.
+	defaultBufferSize = 1 << 10 // 1024
 )
 
 // OptionsFn is a function that sets an option.
@@ -40,6 +40,8 @@ type Options struct {
 	heartbeatTimeout int
 	// timeout(ms) is used to set the dial timeout for connecting to peers.
 	timeout int
+	// bufferSize is the length of the commitChan.
+	bufferSize int
 }
 
 // RaftNode is a member of the Raft cluster
@@ -74,7 +76,7 @@ type RaftNode struct {
 	commitIndexChan chan struct{}
 	// commitChan is a channel that receives committed entries from the RaftNode to be applied to the state machine.
 	// It is buffered to allow the RaftNode to continue committing entries while the state machine is busy.
-	commitChan chan log.LogEntry
+	CommitChan chan log.LogEntry
 	// errChan is a channel that receives errors from the RaftNode.
 	errChan chan error
 	// Lock to protect shared access to this peer's fields
@@ -105,23 +107,24 @@ func WithTimeout(timeout int) OptionsFn {
 	}
 }
 
+func WithBufferSize(len int) OptionsFn {
+	return func(opts Options) {
+		opts.bufferSize = len
+	}
+}
+
 // New creates a new RaftNode.
-func New(peers map[int]string, id int32, port uint16, commitChan chan log.LogEntry, logger *slog.Logger, opts ...OptionsFn) (*RaftNode, error) {
+func New(peers map[int]string, id int32, port uint16, logger *slog.Logger, opts ...OptionsFn) (*RaftNode, error) {
 	r := &RaftNode{
 		peers:           peers,
 		id:              id,
 		leaderID:        -1,
-		commitChan:      commitChan,
 		commitIndexChan: make(chan struct{}),
 		logger:          logger,
 	}
 
 	for _, opt := range opts {
 		opt(r.Options)
-	}
-
-	if r.commitChan == nil {
-		return nil, fmt.Errorf("a commit channel must be provided")
 	}
 
 	if r.logger == nil {
@@ -150,12 +153,16 @@ func New(peers map[int]string, id int32, port uint16, commitChan chan log.LogEnt
 		log:         make([]log.LogEntry, 0),
 		commitIndex: 0,
 		lastApplied: 0,
-		nextIndex:   make(map[int]int64),
-		matchIndex:  make(map[int]int64),
 	}
 
 	// add no-op entry to the log
-	r.state.initLog()
+	r.state.initState()
+
+	if r.bufferSize == 0 {
+		r.bufferSize = defaultBufferSize
+	}
+
+	r.CommitChan = make(chan log.LogEntry, defaultBufferSize)
 
 	appendEntriesRPCChan := make(chan server.AppendEntries)
 	voteRPCChan := make(chan server.VoteRequest)
@@ -167,7 +174,6 @@ func New(peers map[int]string, id int32, port uint16, commitChan chan log.LogEnt
 	r.errChan = make(chan error)
 
 	s, err := server.New(int(r.id), port,
-		server.WithHeartbeatTimeout(r.heartbeatTimeout),
 		server.WithLogger(r.logger),
 		server.WithGetStateFunc(r.getCurrentTermCallback()),
 		server.WithTimeout(r.timeout),
@@ -285,6 +291,14 @@ func (r *RaftNode) SetCurrentTerm(term int64) {
 	r.state.currentTerm = term
 }
 
+func (r *RaftNode) SetLastApplied(index int64) {
+	r.state.setLastApplied(index)
+}
+
+func (r *RaftNode) GetLastApplied() int64 {
+	return r.state.getLastApplied()
+}
+
 func (r *RaftNode) GetVotedFor() int32 {
 	r.state.mu.Lock()
 	defer r.state.mu.Unlock()
@@ -295,6 +309,12 @@ func (r *RaftNode) SetVotedFor(id int32) {
 	r.state.mu.Lock()
 	defer r.state.mu.Unlock()
 	r.state.votedFor = id
+}
+
+func (r *RaftNode) GetLogByIndex(index int64) log.LogEntry {
+	r.state.mu.Lock()
+	defer r.state.mu.Unlock()
+	return r.state.log.GetLog(index)
 }
 
 func (r *RaftNode) GetLog() []log.LogEntry {

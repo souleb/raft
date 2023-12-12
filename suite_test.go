@@ -10,7 +10,6 @@ import (
 	"log/slog"
 
 	"github.com/phayes/freeport"
-	"github.com/souleb/raft/log"
 	"google.golang.org/grpc/resolver"
 )
 
@@ -28,14 +27,13 @@ func TestMain(m *testing.M) {
 	opts := &slog.HandlerOptions{
 		Level: slog.LevelDebug,
 	}
-	textHandler := slog.NewTextHandler(os.Stdout, opts)
+	textHandler := slog.NewTextHandler(os.Stderr, opts)
 	logger = slog.New(textHandler)
 	os.Exit(m.Run())
 }
 
 func nodeSetup(peers map[int]string, id int32, logger *slog.Logger) (*RaftNode, error) {
-	commitChan := make(chan log.LogEntry, commitChanSize)
-	node, err := New(peers, id, uint16(id), commitChan, logger)
+	node, err := New(peers, id, uint16(id), logger)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create a new node: %w", err)
 	}
@@ -100,23 +98,23 @@ func checkNoLeader(nodes []*RaftNode) error {
 	return nil
 }
 
-func checkLeaderIsElected(nodes []*RaftNode) (int, error) {
+func checkLeaderIsElected(nodes []*RaftNode) (*RaftNode, error) {
 	// adapted from mit/6.5840
 	for i := 0; i < 10; i++ {
 		ms := randomWaitTime(defaultMaxElectionTimeout, defaultMaxElectionTimeout+50)
 		time.Sleep(time.Duration(ms) * time.Millisecond)
 
-		leadersMap := make(map[int][]int)
+		leadersMap := make(map[int][]*RaftNode)
 		for _, node := range nodes {
 			if term, leader := node.GetState(); leader {
-				leadersMap[int(term)] = append(leadersMap[int(term)], int(node.GetID()))
+				leadersMap[int(term)] = append(leadersMap[int(term)], node)
 			}
 		}
 
 		lastTermWithLeader := -1
 		for term, leaders := range leadersMap {
 			if len(leaders) > 1 {
-				return -1, fmt.Errorf("got more than one leader")
+				return nil, fmt.Errorf("got more than one leader")
 			}
 			if int(term) > lastTermWithLeader {
 				lastTermWithLeader = int(term)
@@ -127,19 +125,14 @@ func checkLeaderIsElected(nodes []*RaftNode) (int, error) {
 			return leadersMap[lastTermWithLeader][0], nil
 		}
 	}
-	return -1, fmt.Errorf("1 leader was expected")
+	return nil, fmt.Errorf("1 leader was expected")
 }
 
-func stopNode(nodes []*RaftNode, node int) error {
-	for _, n := range nodes {
-		if int(n.GetID()) == node {
-			return n.Stop()
-		}
-	}
-	return fmt.Errorf("leader not found")
+func stopNode(node *RaftNode) error {
+	return node.Stop()
 }
 
-func stopNextNode(nodes []*RaftNode, node int) error {
+func stopNextNode(nodes []*RaftNode, node int) (*RaftNode, error) {
 	nodeIndex := -1
 	for i, n := range nodes {
 		if int(n.GetID()) == node {
@@ -148,10 +141,10 @@ func stopNextNode(nodes []*RaftNode, node int) error {
 		}
 	}
 	if nodeIndex == -1 {
-		return fmt.Errorf("leader not found")
+		return nil, fmt.Errorf("cannot find node")
 	}
 	nextIndex := (nodeIndex + 1) % len(nodes)
-	return nodes[nextIndex].Stop()
+	return nodes[nextIndex], nodes[nextIndex].Stop()
 }
 
 func startNode(ctx context.Context, nodes []*RaftNode, node int) error {
@@ -164,12 +157,13 @@ func startNode(ctx context.Context, nodes []*RaftNode, node int) error {
 			// copy the state
 			newNode.SetCurrentTerm(n.GetCurrentTerm())
 			newNode.SetVotedFor(n.GetVotedFor())
+			newNode.SetLastApplied(n.GetLastApplied())
 			newNode.SetLog(n.GetLog())
 			nodes[i] = newNode
 			return newNode.Run(ctx, false)
 		}
 	}
-	return fmt.Errorf("leader not found")
+	return fmt.Errorf("cannot find node")
 }
 
 func startNextNode(ctx context.Context, nodes []*RaftNode, node int) error {
@@ -181,7 +175,7 @@ func startNextNode(ctx context.Context, nodes []*RaftNode, node int) error {
 		}
 	}
 	if nodeIndex == -1 {
-		return fmt.Errorf("leader not found")
+		return fmt.Errorf("cannot find node")
 	}
 	nextIndex := (nodeIndex + 1) % len(nodes)
 	newNode, err := nodeSetup(nodes[nextIndex].CopyPeers(), nodes[nextIndex].GetID(), logger)

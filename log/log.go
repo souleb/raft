@@ -62,17 +62,23 @@ func (l LogEntries) LastSN() int64 {
 
 // GetLogTerm returns the Term of the entry at the given index.
 func (l LogEntries) GetLogTerm(index int64) int64 {
+	if len(l) == 0 || index < 0 || index >= int64(len(l)) {
+		return -1
+	}
 	return l[index].Term
+}
+
+// GetLog returns the entry at the given index.
+func (l LogEntries) GetLog(index int64) LogEntry {
+	if len(l) == 0 || index < 0 || index >= int64(len(l)) {
+		return LogEntry{}
+	}
+	return l[index]
 }
 
 // AppendEntry appends an entry to the log.
 func (l *LogEntries) AppendEntry(entry LogEntry) {
 	*l = append(*l, entry)
-}
-
-// AppendEntries appends entries to the log.
-func (l *LogEntries) AppendEntries(entries LogEntries) {
-	*l = append(*l, entries...)
 }
 
 // GetEntries returns the entries between the given indexes.
@@ -89,11 +95,6 @@ func (l *LogEntries) GetEntriesFromIndex(index int64) LogEntries {
 		return nil
 	}
 	return (*l)[index:]
-}
-
-// GetLastLogIndexAndTerm returns the last log index and term.
-func (l *LogEntries) GetLastLogIndexAndTerm() (int64, int64) {
-	return l.LastIndex(), l.LastTerm()
 }
 
 // MatchEntry returns true if the given prevLogIndex and prevLogTerm match the log.
@@ -119,10 +120,9 @@ func (l *LogEntries) StoreEntriesFromIndex(index int64, entries LogEntries) {
 				*l = append((*l)[:index+int64(i)], entries[i:]...)
 				return
 			}
-			continue
 		}
 
 		// if new entry is not in the existing log, append it
-		*l = append(*l, entry)
+		l.AppendEntry(entry)
 	}
 }

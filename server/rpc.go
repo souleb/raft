@@ -8,11 +8,9 @@ import (
 	"github.com/souleb/raft/errors"
 	"github.com/souleb/raft/log"
 
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
-
-// type SendAppendEntriesFunc func(term int64, leaderId int32, prevLogIndex int64, prevLogTerm int64, entries []byte, leaderCommit int64, responseChan chan RPCResponse)
-// type SendVoteRequestFunc func(term int64, candidateID int32, lastLogIndex int64, lastLogTerm int64, responseChan chan RPCResponse)
 
 // AppendEntries is a message sent to the a raft node to append entries to the log.
 type AppendEntries struct {
@@ -180,11 +178,14 @@ func (s *RPCServer) SendAppendEntries(ctx context.Context, node int, req AppendE
 	}
 	resp, err := client.AppendEntries(ctx, r)
 	if err != nil {
-		// mark the conn as dead
-		s.setPeerDead(node)
 		st, ok := status.FromError(err)
 		if !ok {
 			return nil, fmt.Errorf("failed to send append entries to node %d: %w", node, err)
+		}
+
+		if st.Code() == codes.Unavailable {
+			// mark the conn as dead
+			s.setPeerDead(node)
 		}
 		return nil, &errors.Error{StatusCode: errors.Code(st.Code()), Err: err}
 	}

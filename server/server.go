@@ -7,9 +7,10 @@ import (
 	"sync"
 	"time"
 
+	"log/slog"
+
 	grpc_retry "github.com/grpc-ecosystem/go-grpc-middleware/retry"
 	pb "github.com/souleb/raft/api"
-	"log/slog"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
@@ -17,8 +18,6 @@ import (
 )
 
 const (
-	// defaultHeartbeatTimeout is the heartbeat timeout in milliseconds.
-	defaultHeartbeatTimeout = 50
 	// defaultTimeout is the timeout in milliseconds.
 	defaultTimeout = 100
 	//defaultRetry is the number of retry to connect to a peer.
@@ -91,13 +90,6 @@ type RPCServer struct {
 	options
 	// Lock to protect shared access to this peer's state
 	mu sync.Mutex
-}
-
-// WithHeartbeatTimeout sets the heartbeat timeout.
-func WithHeartbeatTimeout(heartbeatTimeout int) OptFunc {
-	return func(o *options) {
-		o.heartbeatTimeout = heartbeatTimeout
-	}
 }
 
 // WithTimeout sets the timeout.
@@ -229,7 +221,6 @@ func (s *RPCServer) setPeerConn(conn *grpc.ClientConn, index int) {
 
 func (s *RPCServer) connectToPeers(ctx context.Context, peers map[int]string, secure bool) error {
 	// TODO: handle TLS and Use insecure.NewCredentials() for testing
-	// TODO: handle reconnection in case of peer failure
 	opts := makeOpts(secure)
 
 	if s.peersConn == nil {
@@ -255,10 +246,10 @@ func (s *RPCServer) connectToPeer(ctx context.Context, addr string, opts []grpc.
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(s.timeout)*time.Millisecond)
 	defer cancel()
 	conn, err := grpc.DialContext(ctx, addr, opts...)
-	if err == nil {
-		return conn, nil
+	if err != nil {
+		return conn, fmt.Errorf("failed to dial: %w", err)
 	}
-	return conn, err
+	return conn, nil
 }
 
 func (s *RPCServer) start() error {
@@ -303,14 +294,15 @@ func (s *RPCServer) Notify(state bool) {
 // so most likely we are trying to reconnect to a new server instance.
 func (s *RPCServer) checkConn(ctx context.Context, peers map[int]string, secure bool) {
 	opts := makeOpts(secure)
-	ticker := time.NewTicker(defaultHeartbeatTimeout / 2 * time.Millisecond)
+	opts = append(opts, grpc.WithBlock())
+	ticker := time.NewTicker(defaultTimeout * time.Millisecond >> 4)
 	for {
 		select {
 		case <-ticker.C:
-			for id := range peers {
+			for id, peer := range peers {
 				if s.isPeerDead(id) {
 					s.logger.Debug("new attempt to reconnect to peer", slog.Int("id", id))
-					conn, err := s.connectToPeer(ctx, peers[id], opts)
+					conn, err := s.connectToPeer(ctx, peer, opts)
 					if err != nil {
 						s.logger.Error("error while trying to reconnect to peer", slog.Int("id", id), slog.String("error", err.Error()))
 						continue
@@ -327,7 +319,7 @@ func (s *RPCServer) checkConn(ctx context.Context, peers map[int]string, secure 
 
 func makeOpts(secure bool) []grpc.DialOption {
 	rOpts := []grpc_retry.CallOption{
-		grpc_retry.WithBackoff(grpc_retry.BackoffLinear(time.Duration(defaultHeartbeatTimeout) * time.Millisecond)),
+		grpc_retry.WithBackoff(grpc_retry.BackoffExponentialWithJitter(defaultTimeout*time.Millisecond>>4, 0.10)),
 		grpc_retry.WithCodes(codes.Unavailable),
 		grpc_retry.WithMax(defaultRetry),
 	}

@@ -103,12 +103,6 @@ func (s *state) updatePeerNextIndex(peer int, index int64) {
 	s.nextIndex[peer] = index
 }
 
-func (s *state) getPeerMatchIndex(peer int) int64 {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.matchIndex[peer]
-}
-
 func (s *state) updatePeerMatchIndex(peer int, index int64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -121,10 +115,10 @@ func (s *state) appendEntry(entry log.LogEntry) {
 	s.log.AppendEntry(entry)
 }
 
-func (s *state) getEntriesFromNextIndex(peer int) log.LogEntries {
+func (s *state) getEntriesFromIndex(index int64) log.LogEntries {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.log.GetEntriesFromIndex(s.nextIndex[peer])
+	return s.log.GetEntriesFromIndex(index)
 }
 
 func (s *state) getEntries(minIndex, maxIndex int64) log.LogEntries {
@@ -145,10 +139,10 @@ func (s *state) setCommitIndex(index int64) {
 	s.commitIndex = index
 }
 
-func (s *state) getLastLogIndexAndTerm() (int64, int64) {
+func (s *state) getLogTerm(index int64) int64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.log.GetLastLogIndexAndTerm()
+	return s.log.GetLogTerm(index)
 }
 
 func (s *state) matchEntry(prevLogIndex, prevLogTerm int64) bool {
@@ -178,26 +172,17 @@ func (s *state) getLastIndex() int64 {
 	return s.log.LastIndex()
 }
 
-func (s *state) getLogTerm(index int64) int64 {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.log.GetLogTerm(index)
-}
-
 func (s *state) getLastSN() int64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.log.LastSN()
 }
 
-func (s *state) initLog() error {
+func (s *state) initState() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.lastApplied = 0
-	for i := range s.nextIndex {
-		s.nextIndex[i] = s.lastApplied + 1
-		s.matchIndex[i] = 0
-	}
+	s.commitIndex = 0
 	// If the log is empty, add a dummy entry at index 0.
 	if s.log.LastIndex() == -1 {
 		s.log.AppendEntry(log.LogEntry{})
@@ -205,19 +190,30 @@ func (s *state) initLog() error {
 	return nil
 }
 
+func (s *state) initLeaderVolatileState(peers map[int]string) {
+	s.nextIndex = make(map[int]int64)
+	s.matchIndex = make(map[int]int64)
+	for i := range peers {
+		s.nextIndex[i] = s.log.LastIndex() + 1
+		s.matchIndex[i] = 0
+	}
+}
+
 func (s *state) updateCommitIndex(commitIndex int64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for i := commitIndex + 1; i <= s.log.LastIndex(); i++ {
-		if s.log.GetLogTerm(i) == s.currentTerm {
+	for n := commitIndex + 1; n <= s.log.LastIndex(); n++ {
+		if s.log.GetLogTerm(n) == s.currentTerm {
+			// initialize to 1 because we count the leader itself
 			c := 1
 			for _, match := range s.matchIndex {
-				if match >= i {
+				if match >= n {
 					c++
 				}
-			}
-			if c > len(s.matchIndex)/2 {
-				s.commitIndex = i
+				if c > len(s.matchIndex)/2 {
+					s.commitIndex = n
+					return
+				}
 			}
 		}
 	}
