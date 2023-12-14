@@ -32,7 +32,7 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-func nodeSetup(peers map[int]string, id int32, logger *slog.Logger) (*RaftNode, error) {
+func nodeSetup(peers map[uint]string, id int32, logger *slog.Logger) (*RaftNode, error) {
 	node, err := New(peers, id, uint16(id), logger)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create a new node: %w", err)
@@ -46,10 +46,10 @@ func makeNodes(n int, ports []int, logger *slog.Logger) ([]*RaftNode, error) {
 
 	// make n nodes
 	for i := 0; i < n; i++ {
-		peers := make(map[int]string)
+		peers := make(map[uint]string)
 		for j := 0; j < n; j++ {
 			if i != j {
-				peers[ports[j]] = fmt.Sprintf("localhost:%d", ports[j])
+				peers[uint(ports[j])] = fmt.Sprintf("localhost:%d", ports[j])
 			}
 		}
 		n, err := nodeSetup(peers, int32(ports[i]), logger)

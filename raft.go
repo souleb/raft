@@ -47,14 +47,13 @@ type Options struct {
 // RaftNode is a member of the Raft cluster
 type RaftNode struct {
 	// Peers is a map of peer id to peer address.
-	peers map[int]string
-	// Peers talks over grpc.
-	//peersConn map[int]*grpc.ClientConn
-	// handle all the rpc comms
+	peers map[uint]string
+
+	// RPCServer is the server used to communicate with other peers.
 	RPCServer server.Server
 
 	// persister handles this peer's persisted state
-	persister *storage.Persister
+	persister *storage.LogStore
 	state     *state
 
 	start     sync.Mutex
@@ -114,7 +113,7 @@ func WithBufferSize(len int) OptionsFn {
 }
 
 // New creates a new RaftNode.
-func New(peers map[int]string, id int32, port uint16, logger *slog.Logger, opts ...OptionsFn) (*RaftNode, error) {
+func New(peers map[uint]string, id int32, port uint16, logger *slog.Logger, opts ...OptionsFn) (*RaftNode, error) {
 	r := &RaftNode{
 		peers:           peers,
 		id:              id,
@@ -273,29 +272,29 @@ func (r *RaftNode) IsLeader() bool {
 
 // GetState returns the currentTerm and whether this server
 // believes it is the leader.
-func (r *RaftNode) GetState() (int64, bool) {
+func (r *RaftNode) GetState() (uint64, bool) {
 	r.state.mu.Lock()
 	defer r.state.mu.Unlock()
 	return r.state.currentTerm, r.state.isLeader
 }
 
-func (r *RaftNode) GetCurrentTerm() int64 {
+func (r *RaftNode) GetCurrentTerm() uint64 {
 	r.state.mu.Lock()
 	defer r.state.mu.Unlock()
 	return r.state.currentTerm
 }
 
-func (r *RaftNode) SetCurrentTerm(term int64) {
+func (r *RaftNode) SetCurrentTerm(term uint64) {
 	r.state.mu.Lock()
 	defer r.state.mu.Unlock()
 	r.state.currentTerm = term
 }
 
-func (r *RaftNode) SetLastApplied(index int64) {
+func (r *RaftNode) SetLastApplied(index uint64) {
 	r.state.setLastApplied(index)
 }
 
-func (r *RaftNode) GetLastApplied() int64 {
+func (r *RaftNode) GetLastApplied() uint64 {
 	return r.state.getLastApplied()
 }
 
@@ -311,7 +310,7 @@ func (r *RaftNode) SetVotedFor(id int32) {
 	r.state.votedFor = id
 }
 
-func (r *RaftNode) GetLogByIndex(index int64) log.LogEntry {
+func (r *RaftNode) GetLogByIndex(index uint64) log.LogEntry {
 	r.state.mu.Lock()
 	defer r.state.mu.Unlock()
 	return r.state.log.GetLog(index)
@@ -331,16 +330,16 @@ func (r *RaftNode) SetLog(log []log.LogEntry) {
 	r.state.log = log
 }
 
-func (r *RaftNode) GetPeers() map[int]string {
+func (r *RaftNode) GetPeers() map[uint]string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return r.peers
 }
 
-func (r *RaftNode) CopyPeers() map[int]string {
+func (r *RaftNode) CopyPeers() map[uint]string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	peers := make(map[int]string)
+	peers := make(map[uint]string)
 	for k, v := range r.peers {
 		peers[k] = v
 	}
@@ -359,8 +358,8 @@ func (r *RaftNode) getHeartbeatTimeout() int {
 	return r.heartbeatTimeout
 }
 
-func (r *RaftNode) getCurrentTermCallback() func() (int64, bool) {
-	return func() (int64, bool) {
+func (r *RaftNode) getCurrentTermCallback() func() (uint64, bool) {
+	return func() (uint64, bool) {
 		return r.GetState()
 	}
 }

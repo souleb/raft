@@ -66,7 +66,7 @@ func (h *heartbeat) send(ctx context.Context, wg *sync.WaitGroup) {
 		req.PrevLogIndex = index - 1
 		req.PrevLogTerm = h.r.state.getLogTerm(req.PrevLogIndex)
 		wg.Add(1)
-		go func(peer int, req server.AppendEntries) {
+		go func(peer uint, req server.AppendEntries) {
 			resp, err := h.r.RPCServer.SendAppendEntries(ctx, peer, req)
 			if err != nil {
 				if e, ok := err.(*errors.Error); !ok || e.StatusCode != errors.Canceled {

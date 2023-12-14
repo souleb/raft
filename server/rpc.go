@@ -15,17 +15,17 @@ import (
 // AppendEntries is a message sent to the a raft node to append entries to the log.
 type AppendEntries struct {
 	// Term is the observed term of the leader.
-	Term int64
+	Term uint64
 	// LeaderId is the ID of the leader.
 	LeaderId int32
 	// PrevLogIndex is the index of the log entry immediately preceding the new ones.
-	PrevLogIndex int64
+	PrevLogIndex uint64
 	// PrevLogTerm is the term of the log entry immediately preceding the new ones.
-	PrevLogTerm int64
+	PrevLogTerm uint64
 	// Entries are the log entries to append.
 	Entries log.LogEntries
 	// LeaderCommit is the leader's commit index.
-	LeaderCommit int64
+	LeaderCommit uint64
 	// ResponseChan is the channel to send the response to.
 	ResponseChan chan RPCResponse
 }
@@ -33,13 +33,13 @@ type AppendEntries struct {
 // VoteRequest is a message sent to the raft node to request a vote.
 type VoteRequest struct {
 	// Term is the candidate's term.
-	Term int64
+	Term uint64
 	// CandidateId is the candidate requesting the vote.
 	CandidateId int32
 	// LastLogIndex is the index of the candidate's last log entry.
-	LastLogIndex int64
+	LastLogIndex uint64
 	// LastLogTerm is the term of the candidate's last log entry.
-	LastLogTerm int64
+	LastLogTerm uint64
 	// ResponseChan is the channel to send the response to.
 	ResponseChan chan RPCResponse
 }
@@ -57,7 +57,7 @@ type ApplyRequest struct {
 // RPCResponse is a response to an RPC request.
 type RPCResponse struct {
 	// Term is the current term of the node.
-	Term int64
+	Term uint64
 	// Response is the response to the request. It is true if the request was
 	// accepted.
 	Response bool
@@ -130,7 +130,7 @@ func (s *RPCServer) AppendEntries(ctx context.Context, in *pb.AppendEntriesReque
 // SendRequestVote sends a request vote to a node. The node is identified by its
 // ID. It returns an error if the node is not connected and marks the node as
 // dead.
-func (s *RPCServer) SendRequestVote(ctx context.Context, node int, req VoteRequest) (*RPCResponse, error) {
+func (s *RPCServer) SendRequestVote(ctx context.Context, node uint, req VoteRequest) (*RPCResponse, error) {
 	if s.isPeerDead(node) {
 		return nil, fmt.Errorf("cannot send request vote to node %d: node is dead", node)
 	}
@@ -156,7 +156,7 @@ func (s *RPCServer) SendRequestVote(ctx context.Context, node int, req VoteReque
 // SendAppendEntries sends an append entries to a node. The node is identified by
 // its ID. It returns an error if the node is not connected and marks the node as
 // dead.
-func (s *RPCServer) SendAppendEntries(ctx context.Context, node int, req AppendEntries) (*RPCResponse, error) {
+func (s *RPCServer) SendAppendEntries(ctx context.Context, node uint, req AppendEntries) (*RPCResponse, error) {
 	if s.isPeerDead(node) {
 		return nil, fmt.Errorf("cannot send append entries to node %d: node is dead", node)
 	}

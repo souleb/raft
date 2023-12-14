@@ -231,9 +231,9 @@ func TestRaftNode_BasicLogReplication(t *testing.T) {
 	defer conn.Close()
 
 	// create a client and apply an entry
-	sn := int64(1)
+	sn := uint64(1)
 	client := pb.NewApplyEntryClient(conn)
-	_, err = client.ApplyEntry(ctx, &pb.ApplyRequest{Entry: []byte("hello"), SerialNumber: sn})
+	_, err = client.ApplyEntry(ctx, &pb.ApplyRequest{Entry: []byte("hello"), SerialNumber: int64(sn)})
 	require.NoError(t, err)
 
 	// check that the entry was committed
@@ -284,9 +284,9 @@ func TestRaftNode_LogReplicationWithFollowerFailure(t *testing.T) {
 	defer conn.Close()
 
 	// create a client and apply an entry
-	sn := int64(1)
+	sn := uint64(1)
 	client := pb.NewApplyEntryClient(conn)
-	_, err = client.ApplyEntry(ctx, &pb.ApplyRequest{Entry: []byte("hello"), SerialNumber: sn})
+	_, err = client.ApplyEntry(ctx, &pb.ApplyRequest{Entry: []byte("hello"), SerialNumber: int64(sn)})
 	require.NoError(t, err)
 
 	// check that the entry was committed
@@ -302,8 +302,8 @@ func TestRaftNode_LogReplicationWithFollowerFailure(t *testing.T) {
 
 	// the leader and remaining follower should be
 	// able to agree despite the disconnected follower.
-	sn = int64(2)
-	_, err = client.ApplyEntry(ctx, &pb.ApplyRequest{Entry: []byte("hello2"), SerialNumber: sn})
+	sn = uint64(2)
+	_, err = client.ApplyEntry(ctx, &pb.ApplyRequest{Entry: []byte("hello2"), SerialNumber: int64(sn)})
 	require.NoError(t, err)
 
 	// check that the entry was committed
@@ -313,8 +313,8 @@ func TestRaftNode_LogReplicationWithFollowerFailure(t *testing.T) {
 
 	time.Sleep(RaftElectionTimeout)
 
-	sn = int64(3)
-	_, err = client.ApplyEntry(ctx, &pb.ApplyRequest{Entry: []byte("hello3"), SerialNumber: sn})
+	sn = uint64(3)
+	_, err = client.ApplyEntry(ctx, &pb.ApplyRequest{Entry: []byte("hello3"), SerialNumber: int64(sn)})
 	require.NoError(t, err)
 
 	// check that the entry was committed
@@ -327,8 +327,8 @@ func TestRaftNode_LogReplicationWithFollowerFailure(t *testing.T) {
 	require.NoError(t, err)
 
 	// submit a command to the leader.
-	sn = int64(4)
-	response, err := client.ApplyEntry(ctx, &pb.ApplyRequest{Entry: []byte("hello4"), SerialNumber: sn})
+	sn = uint64(4)
+	response, err := client.ApplyEntry(ctx, &pb.ApplyRequest{Entry: []byte("hello4"), SerialNumber: int64(sn)})
 	require.NoError(t, err)
 	require.False(t, response.Success)
 
@@ -377,9 +377,9 @@ func TestRaftNode_LogReplicationWithFollowerReconnect(t *testing.T) {
 	defer conn.Close()
 
 	// create a client and apply an entry
-	sn := int64(1)
+	sn := uint64(1)
 	client := pb.NewApplyEntryClient(conn)
-	_, err = client.ApplyEntry(ctx, &pb.ApplyRequest{Entry: []byte("hello"), SerialNumber: sn})
+	_, err = client.ApplyEntry(ctx, &pb.ApplyRequest{Entry: []byte("hello"), SerialNumber: int64(sn)})
 	require.NoError(t, err)
 
 	// check that the entry was committed
@@ -393,8 +393,8 @@ func TestRaftNode_LogReplicationWithFollowerReconnect(t *testing.T) {
 
 	// the leader and remaining follower should be
 	// able to agree despite the disconnected follower.
-	sn = int64(2)
-	_, err = client.ApplyEntry(ctx, &pb.ApplyRequest{Entry: []byte("hello2"), SerialNumber: sn})
+	sn = uint64(2)
+	_, err = client.ApplyEntry(ctx, &pb.ApplyRequest{Entry: []byte("hello2"), SerialNumber: int64(sn)})
 	require.NoError(t, err)
 
 	// check that the entry was committed
@@ -404,8 +404,8 @@ func TestRaftNode_LogReplicationWithFollowerReconnect(t *testing.T) {
 
 	time.Sleep(RaftElectionTimeout)
 
-	sn = int64(3)
-	_, err = client.ApplyEntry(ctx, &pb.ApplyRequest{Entry: []byte("hello3"), SerialNumber: sn})
+	sn = uint64(3)
+	_, err = client.ApplyEntry(ctx, &pb.ApplyRequest{Entry: []byte("hello3"), SerialNumber: int64(sn)})
 	require.NoError(t, err)
 
 	// check that the entry was committed
@@ -418,15 +418,15 @@ func TestRaftNode_LogReplicationWithFollowerReconnect(t *testing.T) {
 	require.NoError(t, err)
 
 	// submit a command to the leader.
-	sn = int64(4)
-	_, err = client.ApplyEntry(ctx, &pb.ApplyRequest{Entry: []byte("hello4"), SerialNumber: sn})
+	sn = uint64(4)
+	_, err = client.ApplyEntry(ctx, &pb.ApplyRequest{Entry: []byte("hello4"), SerialNumber: int64(sn)})
 	require.NoError(t, err)
 
 	time.Sleep(RaftElectionTimeout)
 
 	// submit a command to the leader.
-	sn = int64(5)
-	_, err = client.ApplyEntry(ctx, &pb.ApplyRequest{Entry: []byte("hello5"), SerialNumber: sn})
+	sn = uint64(5)
+	_, err = client.ApplyEntry(ctx, &pb.ApplyRequest{Entry: []byte("hello5"), SerialNumber: int64(sn)})
 	require.NoError(t, err)
 
 	// check that the entry was committed
@@ -477,9 +477,9 @@ func TestRaftNode_LogReplicationWithLeaderFailure(t *testing.T) {
 	defer conn.Close()
 
 	// create a client and apply an entry
-	sn := int64(1)
+	sn := uint64(1)
 	client := pb.NewApplyEntryClient(conn)
-	_, err = client.ApplyEntry(ctx, &pb.ApplyRequest{Entry: []byte("hello"), SerialNumber: sn})
+	_, err = client.ApplyEntry(ctx, &pb.ApplyRequest{Entry: []byte("hello"), SerialNumber: int64(sn)})
 	require.NoError(t, err)
 
 	// check that the entry was committed
@@ -499,8 +499,8 @@ func TestRaftNode_LogReplicationWithLeaderFailure(t *testing.T) {
 
 	// the leader and remaining follower should be
 	// able to agree despite the disconnected server.
-	sn = int64(2)
-	_, err = client.ApplyEntry(ctx, &pb.ApplyRequest{Entry: []byte("hello2"), SerialNumber: sn})
+	sn = uint64(2)
+	_, err = client.ApplyEntry(ctx, &pb.ApplyRequest{Entry: []byte("hello2"), SerialNumber: int64(sn)})
 	require.NoError(t, err)
 
 	// check that the entry was committed
@@ -510,8 +510,8 @@ func TestRaftNode_LogReplicationWithLeaderFailure(t *testing.T) {
 
 	time.Sleep(RaftElectionTimeout)
 
-	sn = int64(3)
-	_, err = client.ApplyEntry(ctx, &pb.ApplyRequest{Entry: []byte("hello3"), SerialNumber: sn})
+	sn = uint64(3)
+	_, err = client.ApplyEntry(ctx, &pb.ApplyRequest{Entry: []byte("hello3"), SerialNumber: int64(sn)})
 	require.NoError(t, err)
 
 	// check that the entry was committed
@@ -526,7 +526,101 @@ func TestRaftNode_LogReplicationWithLeaderFailure(t *testing.T) {
 	}
 }
 
-func checkValueIsCommitted(index int64, nodes []*RaftNode, expectedNodes int, value []byte, retry int) (bool, error) {
+func TestRaftNode_LogReplicationNotEnoughFollowers(t *testing.T) {
+	nodeCount := 5
+	ctx := context.Background()
+	ports, err := getFreePorts(nodeCount)
+	require.NoError(t, err)
+	nodes, err := makeNodes(nodeCount, ports, logger)
+	require.NoError(t, err)
+
+	// start the nodes
+	for _, node := range nodes {
+		go func(node *RaftNode) {
+			err := node.Run(ctx, false)
+			require.NoError(t, err)
+		}(node)
+	}
+
+	// set nodeAddrs
+	for _, port := range ports {
+		nodeAddrs = append(nodeAddrs, fmt.Sprintf("localhost:%d", port))
+	}
+
+	// check that there is a leader
+	leader, err := checkLeaderIsElected(nodes)
+	require.NoError(t, err)
+
+	// get a connection to the leader
+	c := `{"healthCheckConfig": {"serviceName": "quis.RaftLeader"}, "loadBalancingConfig": [ { "round_robin": {} } ]}`
+	target := fmt.Sprintf("%s:///%s", nodeScheme, nodeServiceName)
+	conn, err := grpc.Dial(target, grpc.WithDefaultServiceConfig(c),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithDefaultCallOptions(grpc.WaitForReady(true)))
+
+	require.NoError(t, err)
+	defer conn.Close()
+
+	// create a client and apply an entry
+	sn := uint64(1)
+	client := pb.NewApplyEntryClient(conn)
+	_, err = client.ApplyEntry(ctx, &pb.ApplyRequest{Entry: []byte("hello"), SerialNumber: int64(sn)})
+	require.NoError(t, err)
+
+	// check that the entry was committed
+	ok, err := checkValueIsCommitted(sn, nodes, len(nodes), []byte("hello"), 0)
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	// disconnect 3 followers from the network.
+	follower1, err := stopNextNode(nodes, int(leader.GetID()))
+	require.NoError(t, err)
+	follower2, err := stopNextNode(nodes, int(follower1.GetID()))
+	require.NoError(t, err)
+	follower3, err := stopNextNode(nodes, int(follower2.GetID()))
+	require.NoError(t, err)
+
+	// the leader should reject the command.
+	sn = uint64(2)
+	_, err = client.ApplyEntry(ctx, &pb.ApplyRequest{Entry: []byte("hello2"), SerialNumber: int64(sn)})
+	require.NoError(t, err)
+
+	time.Sleep(RaftElectionTimeout)
+
+	// check that the entry was committed
+	ok, err = checkValueIsCommitted(sn, nodes, len(nodes)-3, []byte("hello2"), 0)
+	require.NoError(t, err)
+	require.False(t, ok)
+
+	// reconnect followers
+	err = startNode(ctx, nodes, int(follower1.GetID()))
+	require.NoError(t, err)
+
+	err = startNode(ctx, nodes, int(follower2.GetID()))
+	require.NoError(t, err)
+
+	err = startNode(ctx, nodes, int(follower3.GetID()))
+	require.NoError(t, err)
+
+	time.Sleep(RaftElectionTimeout)
+
+	sn = uint64(3)
+	_, err = client.ApplyEntry(ctx, &pb.ApplyRequest{Entry: []byte("hello3"), SerialNumber: int64(sn)})
+	require.NoError(t, err)
+
+	// check that the entry was committed
+	ok, err = checkValueIsCommitted(sn, nodes, len(nodes)-1, []byte("hello3"), 0)
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	// stop nodes
+	for _, node := range nodes {
+		err := node.Stop()
+		require.NoError(t, err)
+	}
+}
+
+func checkValueIsCommitted(index uint64, nodes []*RaftNode, expectedNodes int, value []byte, retry int) (bool, error) {
 	// somebody claimed to be the leader and to have
 	// submitted our command; wait a while for agreement.
 	retry += 1
@@ -552,7 +646,7 @@ func checkValueIsCommitted(index int64, nodes []*RaftNode, expectedNodes int, va
 	return false, nil
 }
 
-func nCommitted(index int64, nodes []*RaftNode) (int, []byte, error) {
+func nCommitted(index uint64, nodes []*RaftNode) (int, []byte, error) {
 	count := 0
 	var cmd []byte = nil
 

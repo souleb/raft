@@ -17,6 +17,6 @@ message ApplyRequest {
 
 // The Apply response structure.
 message ApplyResponse {
-  int64 term = 1;
+  uint64 term = 1;
   bool success = 2;
 }

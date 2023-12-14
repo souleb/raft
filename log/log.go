@@ -4,8 +4,10 @@ import "fmt"
 
 // LogEntry is a log entry.
 type LogEntry struct {
+	// Index is the index of the entry in the log.
+	Index uint64
 	// Term is the Term in which the entry was received by the leader.
-	Term int64
+	Term uint64
 	// Command is the Command to be applied to the state machine.
 	Command []byte
 	// Sn is the serial number of the entry.
@@ -21,11 +23,15 @@ func (l *LogEntry) String() string {
 // LogEntries is a slice of LogEntry.
 type LogEntries []LogEntry
 
-func (l LogEntries) LastIndex() int64 {
+func (l LogEntries) Length() int {
+	return len(l)
+}
+
+func (l LogEntries) LastIndex() uint64 {
 	if len(l) == 0 {
-		return -1
+		return 0
 	}
-	return int64(len(l) - 1)
+	return uint64(len(l) - 1)
 }
 
 // Last returns the last entry in the log.
@@ -37,9 +43,9 @@ func (l LogEntries) Last() *LogEntry {
 }
 
 // LastTerm returns the Term of the last entry in the log.
-func (l LogEntries) LastTerm() int64 {
+func (l LogEntries) LastTerm() uint64 {
 	if len(l) == 0 {
-		return -1
+		return 0
 	}
 	return l.Last().Term
 }
@@ -61,16 +67,16 @@ func (l LogEntries) LastSN() int64 {
 }
 
 // GetLogTerm returns the Term of the entry at the given index.
-func (l LogEntries) GetLogTerm(index int64) int64 {
-	if len(l) == 0 || index < 0 || index >= int64(len(l)) {
-		return -1
+func (l LogEntries) GetLogTerm(index uint64) uint64 {
+	if len(l) == 0 || index > uint64(len(l)) {
+		return 0
 	}
 	return l[index].Term
 }
 
 // GetLog returns the entry at the given index.
-func (l LogEntries) GetLog(index int64) LogEntry {
-	if len(l) == 0 || index < 0 || index >= int64(len(l)) {
+func (l LogEntries) GetLog(index uint64) LogEntry {
+	if len(l) == 0 || index > uint64(len(l)) {
 		return LogEntry{}
 	}
 	return l[index]
@@ -78,11 +84,13 @@ func (l LogEntries) GetLog(index int64) LogEntry {
 
 // AppendEntry appends an entry to the log.
 func (l *LogEntries) AppendEntry(entry LogEntry) {
+	// save the index of the entry in the log
+	entry.Index = l.LastIndex() + 1
 	*l = append(*l, entry)
 }
 
 // GetEntries returns the entries between the given indexes.
-func (l *LogEntries) GetEntries(minIndex, maxIndex int64) LogEntries {
+func (l *LogEntries) GetEntries(minIndex, maxIndex uint64) LogEntries {
 	if minIndex > maxIndex {
 		return nil
 	}
@@ -90,7 +98,7 @@ func (l *LogEntries) GetEntries(minIndex, maxIndex int64) LogEntries {
 }
 
 // GetEntriesFromIndex returns the entries from the given index.
-func (l *LogEntries) GetEntriesFromIndex(index int64) LogEntries {
+func (l *LogEntries) GetEntriesFromIndex(index uint64) LogEntries {
 	if index > l.LastIndex() {
 		return nil
 	}
@@ -98,7 +106,7 @@ func (l *LogEntries) GetEntriesFromIndex(index int64) LogEntries {
 }
 
 // MatchEntry returns true if the given prevLogIndex and prevLogTerm match the log.
-func (l *LogEntries) MatchEntry(prevLogIndex, prevLogTerm int64) bool {
+func (l *LogEntries) MatchEntry(prevLogIndex uint64, prevLogTerm uint64) bool {
 	if l == nil || prevLogIndex > l.LastIndex() {
 		return false
 	}
@@ -110,14 +118,14 @@ func (l *LogEntries) MatchEntry(prevLogIndex, prevLogTerm int64) bool {
 // If the existing entry conflicts with a new one (same index but different terms),
 // delete the existing entry and all that follow it and append the new entries.
 // If the new entry is not in the existing log, append it.
-func (l *LogEntries) StoreEntriesFromIndex(index int64, entries LogEntries) {
+func (l *LogEntries) StoreEntriesFromIndex(index uint64, entries LogEntries) {
 	for i, entry := range entries {
 		if len(*l) > int(index)+i {
 			// if existing entry conflicts with new one (same index but different terms),
 			// delete the existing entry and all that follow it and append the new entries
 			// then return
-			if (*l)[index+int64(i)].Term != entry.Term {
-				*l = append((*l)[:index+int64(i)], entries[i:]...)
+			if (*l)[index+uint64(i)].Term != entry.Term {
+				*l = append((*l)[:index+uint64(i)], entries[i:]...)
 				return
 			}
 		}

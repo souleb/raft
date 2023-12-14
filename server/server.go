@@ -30,9 +30,9 @@ const (
 // other raft nodes.
 type Sender interface {
 	// SendAppendEntries sends an AppendEntries RPC to the given node.
-	SendAppendEntries(ctx context.Context, node int, req AppendEntries) (*RPCResponse, error)
+	SendAppendEntries(ctx context.Context, node uint, req AppendEntries) (*RPCResponse, error)
 	// SendRequestVote sends a VoteRequest RPC to the given node.
-	SendRequestVote(ctx context.Context, node int, req VoteRequest) (*RPCResponse, error)
+	SendRequestVote(ctx context.Context, node uint, req VoteRequest) (*RPCResponse, error)
 }
 
 // Server is the interface that wraps the basic methods for communicating with
@@ -40,7 +40,7 @@ type Sender interface {
 type Server interface {
 	Sender
 	// Run starts the server.
-	Run(ctx context.Context, peers map[int]string, testMode bool) error
+	Run(ctx context.Context, peers map[uint]string, testMode bool) error
 	// SetVoteRPCChan sets the channel to send vote requests to the fsm.
 	SetVoteRPCChan(voteChan chan VoteRequest) Server
 	// SetAppendEntryRPCChan sets the channel to send entries to replicate to the fsm.
@@ -56,7 +56,7 @@ var _ Server = (*RPCServer)(nil)
 // getStateFunc is a function that returns the current term and whether this
 // peer is the leader. This function is used to report the health of the leader
 // to the health server.
-type getStateFunc func() (int64, bool)
+type getStateFunc func() (uint64, bool)
 
 type options struct {
 	// getStateFunc is a function that returns the current term and whether this
@@ -77,8 +77,8 @@ type RPCServer struct {
 	pb.UnimplementedAppendEntriesServer
 	pb.UnimplementedVoteServer
 	pb.UnimplementedApplyEntryServer
-	peersConn            map[int]*grpc.ClientConn
-	deadPeersConn        map[int]bool
+	peersConn            map[uint]*grpc.ClientConn
+	deadPeersConn        map[uint]bool
 	id                   int
 	port                 uint16
 	grpcServer           *grpc.Server
@@ -118,8 +118,8 @@ func New(id int, port uint16, opts ...OptFunc) (*RPCServer, error) {
 	s := &RPCServer{
 		id:            id,
 		port:          port,
-		deadPeersConn: make(map[int]bool),
-		peersConn:     make(map[int]*grpc.ClientConn),
+		deadPeersConn: make(map[uint]bool),
+		peersConn:     make(map[uint]*grpc.ClientConn),
 	}
 
 	for _, opt := range opts {
@@ -158,7 +158,7 @@ func (s *RPCServer) SetAppendEntryRPCChan(appendEntriesChan chan AppendEntries) 
 }
 
 // Run starts the server.
-func (s *RPCServer) Run(ctx context.Context, peers map[int]string, secure bool) error {
+func (s *RPCServer) Run(ctx context.Context, peers map[uint]string, secure bool) error {
 	// check if channels are set
 	if s.voteRPCChan == nil || s.appendEntriesRPCChan == nil || s.applyEntryRPCChan == nil {
 		return fmt.Errorf("channels to send RPCs are not set")
@@ -180,7 +180,7 @@ func (s *RPCServer) Run(ctx context.Context, peers map[int]string, secure bool) 
 	}
 
 	// start the conne checkers
-	p := make(map[int]string)
+	p := make(map[uint]string)
 	for k, v := range peers {
 		p[k] = v
 	}
@@ -188,43 +188,43 @@ func (s *RPCServer) Run(ctx context.Context, peers map[int]string, secure bool) 
 	return nil
 }
 
-func (s *RPCServer) isPeerDead(index int) bool {
+func (s *RPCServer) isPeerDead(index uint) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.deadPeersConn[index]
 }
 
-func (s *RPCServer) setPeerDead(index int) {
+func (s *RPCServer) setPeerDead(index uint) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.deadPeersConn[index] = true
 }
 
-func (s *RPCServer) setPeerAlive(index int) {
+func (s *RPCServer) setPeerAlive(index uint) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.deadPeersConn[index] = false
 }
 
 // GetPeerConn returns a grpc connection to be used to send RPCs to the peer.
-func (s *RPCServer) GetPeerConn(index int) *grpc.ClientConn {
+func (s *RPCServer) GetPeerConn(index uint) *grpc.ClientConn {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.peersConn[index]
 }
 
-func (s *RPCServer) setPeerConn(conn *grpc.ClientConn, index int) {
+func (s *RPCServer) setPeerConn(conn *grpc.ClientConn, index uint) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.peersConn[index] = conn
 }
 
-func (s *RPCServer) connectToPeers(ctx context.Context, peers map[int]string, secure bool) error {
+func (s *RPCServer) connectToPeers(ctx context.Context, peers map[uint]string, secure bool) error {
 	// TODO: handle TLS and Use insecure.NewCredentials() for testing
 	opts := makeOpts(secure)
 
 	if s.peersConn == nil {
-		s.peersConn = make(map[int]*grpc.ClientConn)
+		s.peersConn = make(map[uint]*grpc.ClientConn)
 	}
 
 	for key, addr := range peers {
@@ -292,7 +292,7 @@ func (s *RPCServer) Notify(state bool) {
 // by calling connectToPeer.
 // We do this instead of resetting the connection because our server cannot be restarted
 // so most likely we are trying to reconnect to a new server instance.
-func (s *RPCServer) checkConn(ctx context.Context, peers map[int]string, secure bool) {
+func (s *RPCServer) checkConn(ctx context.Context, peers map[uint]string, secure bool) {
 	opts := makeOpts(secure)
 	opts = append(opts, grpc.WithBlock())
 	ticker := time.NewTicker(defaultTimeout * time.Millisecond >> 4)
@@ -301,10 +301,10 @@ func (s *RPCServer) checkConn(ctx context.Context, peers map[int]string, secure 
 		case <-ticker.C:
 			for id, peer := range peers {
 				if s.isPeerDead(id) {
-					s.logger.Debug("new attempt to reconnect to peer", slog.Int("id", id))
+					s.logger.Debug("new attempt to reconnect to peer", slog.Uint64("id", uint64(id)))
 					conn, err := s.connectToPeer(ctx, peer, opts)
 					if err != nil {
-						s.logger.Error("error while trying to reconnect to peer", slog.Int("id", id), slog.String("error", err.Error()))
+						s.logger.Error("error while trying to reconnect to peer", slog.Uint64("id", uint64(id)), slog.String("error", err.Error()))
 						continue
 					}
 					s.setPeerConn(conn, id)

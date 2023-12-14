@@ -13,33 +13,33 @@ type stateFn func(ctx context.Context) stateFn
 type state struct {
 	isLeader bool
 	//latest term server has seen (initialized to 0, increases monotonically).
-	currentTerm int64
+	currentTerm uint64
 	// candidateId that received vote in current term (or null if none)
 	votedFor int32
 	// index of highest log entry known to be committed (initialized to 0, increases monotonically).
-	commitIndex int64
+	commitIndex uint64
 	// index of highest log entry applied to state machine (initialized to 0, increases monotonically).
-	lastApplied int64
+	lastApplied uint64
 	// log entries; each entry contains command for state machine, and term when entry was received by leader (first index is 1)
 	log log.LogEntries
 	// for each server, index of the next log entry to send to that server (initialized to leader last log index + 1)
-	nextIndex map[int]int64
+	nextIndex map[uint]uint64
 	// for each server, index of highest log entry known to be replicated on server (initialized to 0, increases monotonically)
-	matchIndex map[int]int64
+	matchIndex map[uint]uint64
 	// Observer is a list of observers that are notified when the RaftNode
 	// observes a change in leadership.
 	observers []Observer
 	mu        sync.Mutex
 }
 
-func (s *state) setTermAndVote(term int64, id int32) {
+func (s *state) setTermAndVote(term uint64, id int32) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.currentTerm = term
 	s.votedFor = id
 }
 
-func (s *state) resetElectionFields(term int64, leader bool) {
+func (s *state) resetElectionFields(term uint64, leader bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.currentTerm = term
@@ -64,13 +64,13 @@ func (s *state) setVotedFor(id int32) {
 	s.votedFor = id
 }
 
-func (s *state) getCurrentTerm() int64 {
+func (s *state) getCurrentTerm() uint64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.currentTerm
 }
 
-func (s *state) setCurrentTerm(term int64) {
+func (s *state) setCurrentTerm(term uint64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.currentTerm = term
@@ -85,25 +85,27 @@ func (s *state) setLeader(leader bool) {
 	}
 }
 
-func (s *state) getPeerNextIndex(peer int) int64 {
+func (s *state) getPeerNextIndex(peer uint) uint64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.nextIndex[peer]
 }
 
-func (s *state) decrementPeerNextIndex(peer int) {
+func (s *state) decrementPeerNextIndex(peer uint) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.nextIndex[peer]--
+	if s.nextIndex[peer] > 1 {
+		s.nextIndex[peer]--
+	}
 }
 
-func (s *state) updatePeerNextIndex(peer int, index int64) {
+func (s *state) updatePeerNextIndex(peer uint, index uint64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.nextIndex[peer] = index
 }
 
-func (s *state) updatePeerMatchIndex(peer int, index int64) {
+func (s *state) updatePeerMatchIndex(peer uint, index uint64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.matchIndex[peer] = index
@@ -115,58 +117,58 @@ func (s *state) appendEntry(entry log.LogEntry) {
 	s.log.AppendEntry(entry)
 }
 
-func (s *state) getEntriesFromIndex(index int64) log.LogEntries {
+func (s *state) getEntriesFromIndex(index uint64) log.LogEntries {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.log.GetEntriesFromIndex(index)
 }
 
-func (s *state) getEntries(minIndex, maxIndex int64) log.LogEntries {
+func (s *state) getEntries(minIndex, maxIndex uint64) log.LogEntries {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.log.GetEntries(minIndex, maxIndex)
 }
 
-func (s *state) getCommitIndex() int64 {
+func (s *state) getCommitIndex() uint64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.commitIndex
 }
 
-func (s *state) setCommitIndex(index int64) {
+func (s *state) setCommitIndex(index uint64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.commitIndex = index
 }
 
-func (s *state) getLogTerm(index int64) int64 {
+func (s *state) getLogTerm(index uint64) uint64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.log.GetLogTerm(index)
 }
 
-func (s *state) matchEntry(prevLogIndex, prevLogTerm int64) bool {
+func (s *state) matchEntry(prevLogIndex, prevLogTerm uint64) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if prevLogIndex == -1 {
+	if prevLogIndex == 0 {
 		return true
 	}
 	return s.log.MatchEntry(prevLogIndex, prevLogTerm)
 }
 
-func (s *state) getLastApplied() int64 {
+func (s *state) getLastApplied() uint64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.lastApplied
 }
 
-func (s *state) setLastApplied(index int64) {
+func (s *state) setLastApplied(index uint64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.lastApplied = index
 }
 
-func (s *state) getLastIndex() int64 {
+func (s *state) getLastIndex() uint64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.log.LastIndex()
@@ -183,23 +185,23 @@ func (s *state) initState() error {
 	defer s.mu.Unlock()
 	s.lastApplied = 0
 	s.commitIndex = 0
-	// If the log is empty, add a dummy entry at index 0.
-	if s.log.LastIndex() == -1 {
+	// If the log is empty, add a dummy entry
+	if s.log.Length() == 0 {
 		s.log.AppendEntry(log.LogEntry{})
 	}
 	return nil
 }
 
-func (s *state) initLeaderVolatileState(peers map[int]string) {
-	s.nextIndex = make(map[int]int64)
-	s.matchIndex = make(map[int]int64)
+func (s *state) initLeaderVolatileState(peers map[uint]string) {
+	s.nextIndex = make(map[uint]uint64)
+	s.matchIndex = make(map[uint]uint64)
 	for i := range peers {
 		s.nextIndex[i] = s.log.LastIndex() + 1
 		s.matchIndex[i] = 0
 	}
 }
 
-func (s *state) updateCommitIndex(commitIndex int64) {
+func (s *state) updateCommitIndex(commitIndex uint64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for n := commitIndex + 1; n <= s.log.LastIndex(); n++ {
@@ -219,7 +221,7 @@ func (s *state) updateCommitIndex(commitIndex int64) {
 	}
 }
 
-func (s *state) storeEntriesFromIndex(index int64, entries log.LogEntries) {
+func (s *state) storeEntriesFromIndex(index uint64, entries log.LogEntries) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.log.StoreEntriesFromIndex(index, entries)

@@ -279,8 +279,8 @@ func (r *RaftNode) getVotes(ctx context.Context, wg *sync.WaitGroup, respChan ch
 	r.logger.Debug("sending request vote", slog.Int("id", int(r.GetID())),
 		slog.Int("currentTerm", int(r.state.getCurrentTerm())))
 	var (
-		lastIndex   int64 = 0
-		lastLogTerm int64 = 0
+		lastIndex   uint64 = 0
+		lastLogTerm uint64  = 0
 	)
 	if len(r.state.log) > 0 {
 		lastIndex = r.state.log.LastIndex()
@@ -295,7 +295,7 @@ func (r *RaftNode) getVotes(ctx context.Context, wg *sync.WaitGroup, respChan ch
 
 	for index := range r.GetPeers() {
 		wg.Add(1)
-		go func(index int) {
+		go func(index uint) {
 			response, err := r.RPCServer.SendRequestVote(ctx, index, req)
 			if err != nil {
 				if e, ok := err.(*errors.Error); !ok || e.StatusCode != errors.Canceled {
@@ -310,13 +310,13 @@ func (r *RaftNode) getVotes(ctx context.Context, wg *sync.WaitGroup, respChan ch
 	}
 }
 
-func (r *RaftNode) prepareStateRevert(term int64, leader bool, cancel context.CancelFunc, wg *sync.WaitGroup) {
+func (r *RaftNode) prepareStateRevert(term uint64, leader bool, cancel context.CancelFunc, wg *sync.WaitGroup) {
 	r.state.resetElectionFields(term, leader)
 	cancel()
 	wg.Wait()
 }
 
-func (r *RaftNode) appendEntry(ctx context.Context, wg *sync.WaitGroup) (int64, bool) {
+func (r *RaftNode) appendEntry(ctx context.Context, wg *sync.WaitGroup) (uint64, bool) {
 	currentTerm := r.state.getCurrentTerm()
 	currentCommitIndex := r.state.getCommitIndex()
 	respChan := make(chan *server.RPCResponse, len(r.GetPeers()))
@@ -332,7 +332,7 @@ func (r *RaftNode) appendEntry(ctx context.Context, wg *sync.WaitGroup) (int64, 
 		req.PrevLogTerm = r.state.getLogTerm(req.PrevLogIndex)
 		if r.state.getLastIndex() >= index {
 			wg.Add(1)
-			go func(peer int, index int64, req server.AppendEntries) {
+			go func(peer uint, index uint64, req server.AppendEntries) {
 				req.Entries = r.state.getEntriesFromIndex(index)
 				for {
 					resp, err := r.RPCServer.SendAppendEntries(ctx, peer, req)
@@ -442,7 +442,7 @@ func (r *RaftNode) commitEntries(ctx context.Context) {
 	}
 }
 
-func minValue(a, b int64) int64 {
+func minValue(a, b uint64) uint64 {
 	if a < b {
 		return a
 	}
