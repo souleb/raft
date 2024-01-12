@@ -29,7 +29,7 @@ type state struct {
 	// Observer is a list of observers that are notified when the RaftNode
 	// observes a change in leadership.
 	observers []Observer
-	mu        sync.Mutex
+	mu        sync.RWMutex
 }
 
 func (s *state) setTermAndVote(term uint64, id int32) {
@@ -52,9 +52,16 @@ func (s *state) resetElectionFields(term uint64, leader bool) {
 	}
 }
 
-func (s *state) getVotedFor() int32 {
+// SetLogs sets the log entries for the RaftNode.
+func (s *state) SetLogs(log log.LogEntries) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.log = log
+}
+
+func (s *state) getVotedFor() int32 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return s.votedFor
 }
 
@@ -65,8 +72,8 @@ func (s *state) setVotedFor(id int32) {
 }
 
 func (s *state) getCurrentTerm() uint64 {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return s.currentTerm
 }
 
@@ -86,8 +93,8 @@ func (s *state) setLeader(leader bool) {
 }
 
 func (s *state) getPeerNextIndex(peer uint) uint64 {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return s.nextIndex[peer]
 }
 
@@ -117,21 +124,27 @@ func (s *state) appendEntry(entry log.LogEntry) {
 	s.log.AppendEntry(entry)
 }
 
+func (s *state) getLogs(index uint64) []*log.LogEntry {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.log.GetEntriesSlice(index)
+}
+
 func (s *state) getEntriesFromIndex(index uint64) log.LogEntries {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return s.log.GetEntriesFromIndex(index)
 }
 
 func (s *state) getEntries(minIndex, maxIndex uint64) log.LogEntries {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return s.log.GetEntries(minIndex, maxIndex)
 }
 
 func (s *state) getCommitIndex() uint64 {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return s.commitIndex
 }
 
@@ -142,8 +155,8 @@ func (s *state) setCommitIndex(index uint64) {
 }
 
 func (s *state) getLogTerm(index uint64) uint64 {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return s.log.GetLogTerm(index)
 }
 
@@ -157,8 +170,8 @@ func (s *state) matchEntry(prevLogIndex, prevLogTerm uint64) bool {
 }
 
 func (s *state) getLastApplied() uint64 {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return s.lastApplied
 }
 
@@ -169,27 +182,25 @@ func (s *state) setLastApplied(index uint64) {
 }
 
 func (s *state) getLastIndex() uint64 {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return s.log.LastIndex()
 }
 
 func (s *state) getLastSN() int64 {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return s.log.LastSN()
 }
 
-func (s *state) initState() error {
+func (s *state) initState() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.lastApplied = 0
 	s.commitIndex = 0
-	// If the log is empty, add a dummy entry
-	if s.log.Length() == 0 {
-		s.log.AppendEntry(log.LogEntry{})
-	}
-	return nil
+	s.currentTerm = 0
+	s.votedFor = -1
+	s.log = []log.LogEntry{{}} // first index is 1
 }
 
 func (s *state) initLeaderVolatileState(peers map[uint]string) {

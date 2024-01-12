@@ -89,7 +89,8 @@ type RPCServer struct {
 	applyEntryRPCChan    chan ApplyRequest
 	options
 	// Lock to protect shared access to this peer's state
-	mu sync.Mutex
+	mu   sync.RWMutex
+	done chan struct{}
 }
 
 // WithTimeout sets the timeout.
@@ -120,6 +121,7 @@ func New(id int, port uint16, opts ...OptFunc) (*RPCServer, error) {
 		port:          port,
 		deadPeersConn: make(map[uint]bool),
 		peersConn:     make(map[uint]*grpc.ClientConn),
+		done:          make(chan struct{}),
 	}
 
 	for _, opt := range opts {
@@ -189,8 +191,8 @@ func (s *RPCServer) Run(ctx context.Context, peers map[uint]string, secure bool)
 }
 
 func (s *RPCServer) isPeerDead(index uint) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return s.deadPeersConn[index]
 }
 
@@ -208,8 +210,8 @@ func (s *RPCServer) setPeerAlive(index uint) {
 
 // GetPeerConn returns a grpc connection to be used to send RPCs to the peer.
 func (s *RPCServer) GetPeerConn(index uint) *grpc.ClientConn {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return s.peersConn[index]
 }
 
@@ -230,10 +232,10 @@ func (s *RPCServer) connectToPeers(ctx context.Context, peers map[uint]string, s
 	for key, addr := range peers {
 		conn, err := s.connectToPeer(ctx, addr, opts)
 		if err != nil {
-			s.deadPeersConn[key] = true
+			s.setPeerDead(key)
 			return fmt.Errorf("error while connecting to peer: %w", err)
 		}
-		s.peersConn[key] = conn
+		s.setPeerConn(conn, key)
 	}
 	s.logger.Info("connected to peers", slog.Int("id", int(s.id)))
 	return nil
@@ -262,12 +264,10 @@ func (s *RPCServer) start() error {
 	pb.RegisterVoteServer(s.grpcServer, s)
 	pb.RegisterApplyEntryServer(s.grpcServer, s)
 
-	if s.hs == nil {
-		// setup health server
-		err := s.setupHealthServer([]string{leaderHealthService})
-		if err != nil {
-			return fmt.Errorf("error while setting up the health server: %w", err)
-		}
+	// setup health server
+	err = s.setupHealthServer([]string{leaderHealthService}, s.done)
+	if err != nil {
+		return fmt.Errorf("error while setting up the health server: %w", err)
 	}
 
 	go s.grpcServer.Serve(lis)
@@ -279,7 +279,9 @@ func (s *RPCServer) Stop() {
 	if s.hs != nil {
 		s.hs.Shutdown()
 	}
+	s.done <- struct{}{}
 	s.grpcServer.Stop()
+	s.grpcServer = nil
 }
 
 // Notify is used to observe the state of the node. It implements the Observer

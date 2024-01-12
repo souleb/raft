@@ -13,7 +13,8 @@ import (
 )
 
 // TO DO: handle client calls when the node is not the leader and an appendEntries is received
-// We should return an error to the client and the leader ID
+// We should return an error to the client and the leader ID. We should not process the request
+// because we want to preserve the linearizability guarantee of the system.
 func (r *RaftNode) follower(ctx context.Context) stateFn {
 	min, max := int64(r.getElectionTimeoutMin()), int64(r.getElectionTimeoutMax())
 	r.logger.Debug("follower state", slog.Int("id", int(r.GetID())))
@@ -35,6 +36,7 @@ func (r *RaftNode) follower(ctx context.Context) stateFn {
 					slog.Int("currentTerm", int(r.state.getCurrentTerm())), slog.Int("term", int(req.Term)),
 					slog.String("state", "follower"))
 				r.state.setCurrentTerm(req.Term)
+				r.persistCurrentTerm()
 			}
 			r.setLeaderID(req.LeaderId)
 			r.handleAppendEntries(req)
@@ -48,6 +50,8 @@ func (r *RaftNode) follower(ctx context.Context) stateFn {
 					slog.Int("term", int(req.Term)), slog.Int("candidateID", int(req.CandidateId)),
 					slog.String("state", "follower"))
 				r.state.resetElectionFields(req.Term, false)
+				r.persistVotedFor()
+				r.persistCurrentTerm()
 			}
 			votedFor := r.state.getVotedFor()
 			if votedFor == -1 || votedFor == req.CandidateId {
@@ -57,6 +61,7 @@ func (r *RaftNode) follower(ctx context.Context) stateFn {
 				// if incoming request's log is at least as up-to-date as owned log, grant vote
 				if req.LastLogTerm > lastTerm || (req.LastLogTerm == lastTerm && req.LastLogIndex >= lastIndex) {
 					r.state.setVotedFor(req.CandidateId)
+					r.persistVotedFor()
 					voted = true
 					resetTimer(timer, randomWaitTime(min, max))
 					r.logger.Debug("voted for candidate", slog.Int("currentTerm", int(r.state.getCurrentTerm())),
@@ -112,7 +117,9 @@ func (r *RaftNode) handleAppendEntries(req server.AppendEntries) {
 		return
 	}
 
-	r.state.storeEntriesFromIndex(r.state.getLastIndex()+1, req.Entries)
+	idx := r.state.getLastIndex() + 1
+	r.state.storeEntriesFromIndex(idx, req.Entries)
+	r.persistLogs(r.state.getLogs(idx))
 	req.ResponseChan <- server.RPCResponse{
 		Term:     r.state.getCurrentTerm(),
 		Response: true,
@@ -189,6 +196,7 @@ func (r *RaftNode) candidate(ctx context.Context) stateFn {
 				vote := false
 				if req.LastLogTerm > lastTerm || (req.LastLogTerm == lastTerm && req.LastLogIndex >= lastIndex) {
 					r.state.setVotedFor(req.CandidateId)
+					r.persistVotedFor()
 					vote = true
 					r.logger.Debug("voted for candidate with newer term", slog.Int("currentTerm", int(r.state.getCurrentTerm())),
 						slog.Int("term", int(req.Term)), slog.Int("candidateID", int(req.CandidateId)),
@@ -235,6 +243,7 @@ func (r *RaftNode) leader(ctx context.Context) stateFn {
 			}
 			entry := log.LogEntry{Term: r.state.getCurrentTerm(), Command: req.Command, Sn: req.Sn}
 			r.state.appendEntry(entry)
+			r.persistLogs(r.state.getLogs(r.state.getLastIndex()))
 			// send the new entry to all peers
 			responseTerm, commited := r.appendEntry(ctx, &wg)
 			if responseTerm > r.state.getCurrentTerm() {
@@ -270,6 +279,8 @@ func (r *RaftNode) startElection(ctx context.Context, wg *sync.WaitGroup, respCh
 	r.logger.Debug("starting next election", slog.Int("id", int(r.GetID())),
 		slog.Int("currentTerm", int(r.state.getCurrentTerm())))
 	r.state.setTermAndVote(r.state.getCurrentTerm()+1, r.GetID())
+	r.persistCurrentTerm()
+	r.persistVotedFor()
 	timer := newTimer(randomWaitTime(int64(r.getElectionTimeoutMin()), int64(r.getElectionTimeoutMax())))
 	r.getVotes(ctx, wg, respChan)
 	return timer, 1
@@ -280,7 +291,7 @@ func (r *RaftNode) getVotes(ctx context.Context, wg *sync.WaitGroup, respChan ch
 		slog.Int("currentTerm", int(r.state.getCurrentTerm())))
 	var (
 		lastIndex   uint64 = 0
-		lastLogTerm uint64  = 0
+		lastLogTerm uint64 = 0
 	)
 	if len(r.state.log) > 0 {
 		lastIndex = r.state.log.LastIndex()
@@ -312,6 +323,8 @@ func (r *RaftNode) getVotes(ctx context.Context, wg *sync.WaitGroup, respChan ch
 
 func (r *RaftNode) prepareStateRevert(term uint64, leader bool, cancel context.CancelFunc, wg *sync.WaitGroup) {
 	r.state.resetElectionFields(term, leader)
+	r.persistCurrentTerm()
+	r.persistVotedFor()
 	cancel()
 	wg.Wait()
 }

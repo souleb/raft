@@ -8,6 +8,7 @@ import (
 
 	"log/slog"
 
+	"github.com/souleb/raft/errors"
 	"github.com/souleb/raft/log"
 	"github.com/souleb/raft/server"
 	"github.com/souleb/raft/storage"
@@ -24,6 +25,11 @@ const (
 	defaultTimeout = 100
 	// defaultBufferSize is the default size of the commit channel.
 	defaultBufferSize = 1 << 10 // 1024
+)
+
+const (
+	termStorageKey     = "term"
+	votedForStorageKey = "votedFor"
 )
 
 // OptionsFn is a function that sets an option.
@@ -52,9 +58,9 @@ type RaftNode struct {
 	// RPCServer is the server used to communicate with other peers.
 	RPCServer server.Server
 
-	// persister handles this peer's persisted state
-	persister *storage.LogStore
-	state     *state
+	//storage handles this peer's persisted state
+	storage storage.Store
+	state   *state
 
 	start     sync.Mutex
 	startOnce sync.Once
@@ -100,12 +106,14 @@ func WithHeartbeatTimeout(timeout int) OptionsFn {
 	}
 }
 
+// WithTimeout sets the timeout for the RaftNode.
 func WithTimeout(timeout int) OptionsFn {
 	return func(opts Options) {
 		opts.timeout = timeout
 	}
 }
 
+// WithBufferSize sets the size of the commit channel.
 func WithBufferSize(len int) OptionsFn {
 	return func(opts Options) {
 		opts.bufferSize = len
@@ -113,17 +121,22 @@ func WithBufferSize(len int) OptionsFn {
 }
 
 // New creates a new RaftNode.
-func New(peers map[uint]string, id int32, port uint16, logger *slog.Logger, opts ...OptionsFn) (*RaftNode, error) {
+func New(peers map[uint]string, id int32, port uint16, storage storage.Store, logger *slog.Logger, opts ...OptionsFn) (*RaftNode, error) {
 	r := &RaftNode{
 		peers:           peers,
 		id:              id,
 		leaderID:        -1,
 		commitIndexChan: make(chan struct{}),
 		logger:          logger,
+		storage:         storage,
 	}
 
 	for _, opt := range opts {
 		opt(r.Options)
+	}
+
+	if r.storage == nil {
+		return nil, fmt.Errorf("an initialized storage must be provided")
 	}
 
 	if r.logger == nil {
@@ -146,16 +159,13 @@ func New(peers map[uint]string, id int32, port uint16, logger *slog.Logger, opts
 		r.timeout = defaultTimeout
 	}
 
-	r.state = &state{
-		currentTerm: 0,
-		votedFor:    -1,
-		log:         make([]log.LogEntry, 0),
-		commitIndex: 0,
-		lastApplied: 0,
-	}
-
-	// add no-op entry to the log
+	r.state = &state{}
 	r.state.initState()
+
+	err := r.restoreFromStorage()
+	if err != nil {
+		return nil, err
+	}
 
 	if r.bufferSize == 0 {
 		r.bufferSize = defaultBufferSize
@@ -191,43 +201,43 @@ func New(peers map[uint]string, id int32, port uint16, logger *slog.Logger, opts
 }
 
 func (r *RaftNode) Run(ctx context.Context, secure bool) error {
-	var retErr error
+	// var retErr error
 	ctx, cancel := context.WithCancel(ctx)
 	r.cancel = cancel
 
-	r.startOnce.Do(func() {
-		r.logger.Info("starting raft node", slog.Int("id", int(r.GetID())))
-		err := r.RPCServer.Run(ctx, r.peers, secure)
-		if err != nil {
-			retErr = fmt.Errorf("error while connecting to peers: %w", err)
-			return
-		}
+	// r.startOnce.Do(func() {
+	r.logger.Info("starting raft node", slog.Int("id", int(r.GetID())))
+	err := r.RPCServer.Run(ctx, r.peers, secure)
+	if err != nil {
+		return fmt.Errorf("error while connecting to peers: %w", err)
+		// return
+	}
 
-		go r.runStateMachine(ctx)
-		go r.commitEntries(ctx)
-		r.start.Lock()
-		r.started = true
-		r.start.Unlock()
-	})
+	go r.runStateMachine(ctx)
+	go r.commitEntries(ctx)
+	r.start.Lock()
+	r.started = true
+	r.start.Unlock()
+	// })
 
-	return retErr
+	return nil
 }
 
 // Stop tells the RaftNode to shut itself down.
 func (r *RaftNode) Stop() error {
 	var retErr error
 
-	r.stopOnce.Do(func() {
-		r.logger.Info("raft node is stopping", slog.Int("id", int(r.GetID())))
-		r.stop.Lock()
-		r.stopped = true
-		r.stop.Unlock()
-		r.cancel()
-		retErr = <-r.errChan
-		r.RPCServer.Stop()
-		r.state.setLeader(false)
-		r.logger.Info("raft node is stopped", slog.Int("id", int(r.GetID())))
-	})
+	// r.stopOnce.Do(func() {
+	r.logger.Info("raft node is stopping", slog.Int("id", int(r.GetID())))
+	r.stop.Lock()
+	r.stopped = true
+	r.stop.Unlock()
+	r.cancel()
+	retErr = <-r.errChan
+	r.RPCServer.Stop()
+	r.state.setLeader(false)
+	r.logger.Info("raft node is stopped", slog.Int("id", int(r.GetID())))
+	// })
 
 	return retErr
 }
@@ -265,28 +275,28 @@ func (r *RaftNode) GetLeaderID() int32 {
 }
 
 func (r *RaftNode) IsLeader() bool {
-	r.state.mu.Lock()
-	defer r.state.mu.Unlock()
+	r.state.mu.RLock()
+	defer r.state.mu.RUnlock()
 	return r.state.isLeader
 }
 
 // GetState returns the currentTerm and whether this server
 // believes it is the leader.
 func (r *RaftNode) GetState() (uint64, bool) {
-	r.state.mu.Lock()
-	defer r.state.mu.Unlock()
+	r.state.mu.RLock()
+	defer r.state.mu.RUnlock()
 	return r.state.currentTerm, r.state.isLeader
 }
 
 func (r *RaftNode) GetCurrentTerm() uint64 {
-	r.state.mu.Lock()
-	defer r.state.mu.Unlock()
+	r.state.mu.RLock()
+	defer r.state.mu.RUnlock()
 	return r.state.currentTerm
 }
 
 func (r *RaftNode) SetCurrentTerm(term uint64) {
-	r.state.mu.Lock()
-	defer r.state.mu.Unlock()
+	r.state.mu.RLock()
+	defer r.state.mu.RUnlock()
 	r.state.currentTerm = term
 }
 
@@ -299,8 +309,8 @@ func (r *RaftNode) GetLastApplied() uint64 {
 }
 
 func (r *RaftNode) GetVotedFor() int32 {
-	r.state.mu.Lock()
-	defer r.state.mu.Unlock()
+	r.state.mu.RLock()
+	defer r.state.mu.RUnlock()
 	return r.state.votedFor
 }
 
@@ -311,14 +321,14 @@ func (r *RaftNode) SetVotedFor(id int32) {
 }
 
 func (r *RaftNode) GetLogByIndex(index uint64) log.LogEntry {
-	r.state.mu.Lock()
-	defer r.state.mu.Unlock()
+	r.state.mu.RLock()
+	defer r.state.mu.RUnlock()
 	return r.state.log.GetLog(index)
 }
 
 func (r *RaftNode) GetLog() []log.LogEntry {
-	r.state.mu.Lock()
-	defer r.state.mu.Unlock()
+	r.state.mu.RLock()
+	defer r.state.mu.RUnlock()
 	l := make([]log.LogEntry, len(r.state.log))
 	copy(l, r.state.log)
 	return l
@@ -362,4 +372,71 @@ func (r *RaftNode) getCurrentTermCallback() func() (uint64, bool) {
 	return func() (uint64, bool) {
 		return r.GetState()
 	}
+}
+
+func (r *RaftNode) persistCurrentTerm() error {
+	if err := r.storage.SetUint64([]byte(termStorageKey), r.GetCurrentTerm()); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (r *RaftNode) persistVotedFor() error {
+	if err := r.storage.SetUint64([]byte(votedForStorageKey), uint64(r.GetVotedFor())); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (r *RaftNode) persistLogs(logs []*log.LogEntry) error {
+	if err := r.storage.StoreLogs(logs); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (r *RaftNode) restoreFromStorage() (err error) {
+	if term, err := r.storage.GetUint64([]byte(termStorageKey)); err == nil {
+		r.state.setCurrentTerm(term)
+	} else {
+		if !errors.Is(err, errors.NotFound) {
+			return err
+		}
+	}
+
+	if votedFor, err := r.storage.GetUint64([]byte(votedForStorageKey)); err == nil {
+		r.state.setVotedFor(int32(votedFor))
+	} else {
+		if !errors.Is(err, errors.NotFound) {
+			return err
+		}
+	}
+
+	start, err := r.storage.FirstIndex()
+	if err != nil {
+		return err
+	}
+	// first log entry is at index 1
+	if start == 0 {
+		return nil
+	}
+
+	end, err := r.storage.LastIndex()
+	if err != nil {
+		return err
+	}
+
+	logEntries := make([]log.LogEntry, end-start+1)
+	for i := start; i <= end; i++ {
+		log, err := r.storage.GetLog(i)
+		if err != nil {
+			return err
+		}
+		// set the index of the log entry to start at 0
+		logEntries[i-start] = *log
+	}
+
+	r.state.SetLogs(logEntries)
+	return nil
 }

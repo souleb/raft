@@ -10,6 +10,7 @@ import (
 	"log/slog"
 
 	"github.com/phayes/freeport"
+	"github.com/souleb/raft/storage"
 	"google.golang.org/grpc/resolver"
 )
 
@@ -32,8 +33,8 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-func nodeSetup(peers map[uint]string, id int32, logger *slog.Logger) (*RaftNode, error) {
-	node, err := New(peers, id, uint16(id), logger)
+func nodeSetup(peers map[uint]string, id int32, store storage.Store, logger *slog.Logger) (*RaftNode, error) {
+	node, err := New(peers, id, uint16(id), store, logger)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create a new node: %w", err)
 	}
@@ -48,11 +49,15 @@ func makeNodes(n int, ports []int, logger *slog.Logger) ([]*RaftNode, error) {
 	for i := 0; i < n; i++ {
 		peers := make(map[uint]string)
 		for j := 0; j < n; j++ {
-			if i != j {
+			if j != i {
 				peers[uint(ports[j])] = fmt.Sprintf("localhost:%d", ports[j])
 			}
 		}
-		n, err := nodeSetup(peers, int32(ports[i]), logger)
+		store, err := storage.NewStore(":memory:", storage.Low, logger)
+		if err != nil {
+			return nil, err
+		}
+		n, err := nodeSetup(peers, int32(ports[i]), store, logger)
 		if err != nil {
 			return nil, err
 		}
@@ -75,7 +80,6 @@ func getFreePorts(n int) ([]int, error) {
 }
 
 func checkTerms(nodes []*RaftNode) (int, error) {
-	// adapted from mit/6.5840
 	term := -1
 	for _, node := range nodes {
 		t, _ := node.GetState()
@@ -99,7 +103,6 @@ func checkNoLeader(nodes []*RaftNode) error {
 }
 
 func checkLeaderIsElected(nodes []*RaftNode) (*RaftNode, error) {
-	// adapted from mit/6.5840
 	for i := 0; i < 10; i++ {
 		ms := randomWaitTime(defaultMaxElectionTimeout, defaultMaxElectionTimeout+50)
 		time.Sleep(time.Duration(ms) * time.Millisecond)
@@ -150,7 +153,11 @@ func stopNextNode(nodes []*RaftNode, node int) (*RaftNode, error) {
 func startNode(ctx context.Context, nodes []*RaftNode, node int) error {
 	for i, n := range nodes {
 		if int(n.GetID()) == node {
-			newNode, err := nodeSetup(n.CopyPeers(), n.GetID(), logger)
+			store, err := storage.NewStore(":memory:", storage.Low, logger)
+			if err != nil {
+				return err
+			}
+			newNode, err := nodeSetup(n.CopyPeers(), n.GetID(), store, logger)
 			if err != nil {
 				return err
 			}
@@ -178,7 +185,11 @@ func startNextNode(ctx context.Context, nodes []*RaftNode, node int) error {
 		return fmt.Errorf("cannot find node")
 	}
 	nextIndex := (nodeIndex + 1) % len(nodes)
-	newNode, err := nodeSetup(nodes[nextIndex].CopyPeers(), nodes[nextIndex].GetID(), logger)
+	store, err := storage.NewStore(":memory:", storage.Low, logger)
+	if err != nil {
+		return err
+	}
+	newNode, err := nodeSetup(nodes[nextIndex].CopyPeers(), nodes[nextIndex].GetID(), store, logger)
 	if err != nil {
 		return err
 	}

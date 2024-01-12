@@ -520,7 +520,7 @@ func TestRaftNode_LogReplicationWithLeaderFailure(t *testing.T) {
 	require.True(t, ok)
 
 	// stop nodes
-	for _, node := range nodes {
+	for _, node := range n2 {
 		err := node.Stop()
 		require.NoError(t, err)
 	}
@@ -610,6 +610,97 @@ func TestRaftNode_LogReplicationNotEnoughFollowers(t *testing.T) {
 
 	// check that the entry was committed
 	ok, err = checkValueIsCommitted(sn, nodes, len(nodes)-1, []byte("hello3"), 0)
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	// stop nodes
+	for _, node := range nodes {
+		err := node.Stop()
+		require.NoError(t, err)
+	}
+}
+
+func TestRaftNode_Persist(t *testing.T) {
+	nodeCount := 3
+	ctx := context.Background()
+	ports, err := getFreePorts(nodeCount)
+	require.NoError(t, err)
+	nodes, err := makeNodes(nodeCount, ports, logger)
+	require.NoError(t, err)
+
+	// start the nodes
+	for _, node := range nodes {
+		go func(node *RaftNode) {
+			err := node.Run(ctx, false)
+			require.NoError(t, err)
+		}(node)
+	}
+
+	// set nodeAddrs
+	for _, port := range ports {
+		nodeAddrs = append(nodeAddrs, fmt.Sprintf("localhost:%d", port))
+	}
+
+	// check that there is a leader
+	_, err = checkLeaderIsElected(nodes)
+	require.NoError(t, err)
+
+	// get a connection to the leader
+	c := `{"healthCheckConfig": {"serviceName": "quis.RaftLeader"}, "loadBalancingConfig": [ { "round_robin": {} } ]}`
+	target := fmt.Sprintf("%s:///%s", nodeScheme, nodeServiceName)
+	conn, err := grpc.Dial(target, grpc.WithDefaultServiceConfig(c),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithDefaultCallOptions(grpc.WaitForReady(true)))
+
+	require.NoError(t, err)
+	defer conn.Close()
+
+	// create a client and apply an entry
+	sn := uint64(1)
+	client := pb.NewApplyEntryClient(conn)
+	_, err = client.ApplyEntry(ctx, &pb.ApplyRequest{Entry: []byte("hello"), SerialNumber: int64(sn)})
+	require.NoError(t, err)
+
+	// check that the entry was committed
+	ok, err := checkValueIsCommitted(sn, nodes, len(nodes), []byte("hello"), 0)
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	// stop nodes
+	for _, node := range nodes {
+		err := node.Stop()
+		require.NoError(t, err)
+	}
+
+	// restart nodes
+	for _, node := range nodes {
+		go func(node *RaftNode) {
+			err := node.Run(ctx, false)
+			require.NoError(t, err)
+		}(node)
+	}
+	//time.Sleep(2 * RaftElectionTimeout)
+
+	// check that there is a leader
+	_, err = checkLeaderIsElected(nodes)
+	require.NoError(t, err)
+
+	// get a connection to the leader
+	conn, err = grpc.Dial(target, grpc.WithDefaultServiceConfig(c),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithDefaultCallOptions(grpc.WaitForReady(true)))
+
+	require.NoError(t, err)
+	defer conn.Close()
+
+	// create a client and apply an entry
+	sn = uint64(2)
+	client = pb.NewApplyEntryClient(conn)
+	_, err = client.ApplyEntry(ctx, &pb.ApplyRequest{Entry: []byte("hello2"), SerialNumber: int64(sn)})
+	require.NoError(t, err)
+
+	// check that the entry was committed
+	ok, err = checkValueIsCommitted(sn, nodes, len(nodes), []byte("hello2"), 0)
 	require.NoError(t, err)
 	require.True(t, ok)
 

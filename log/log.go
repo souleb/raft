@@ -97,6 +97,18 @@ func (l *LogEntries) GetEntries(minIndex, maxIndex uint64) LogEntries {
 	return (*l)[minIndex:maxIndex]
 }
 
+// GetEntriesSlice returns the entries between the given indexes.
+func (l *LogEntries) GetEntriesSlice(index uint64) []*LogEntry {
+	if index > l.LastIndex() {
+		return nil
+	}
+	res := make([]*LogEntry, l.LastIndex()-index+1)
+	for i := index; i <= l.LastIndex(); i++ {
+		res[i-index] = &(*l)[i]
+	}
+	return res
+}
+
 // GetEntriesFromIndex returns the entries from the given index.
 func (l *LogEntries) GetEntriesFromIndex(index uint64) LogEntries {
 	if index > l.LastIndex() {
