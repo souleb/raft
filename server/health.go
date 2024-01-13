@@ -21,12 +21,12 @@ func (s *RPCServer) report(services []string, done <-chan struct{}) {
 	_, state := s.getStateFunc()
 	s.setServingStatus(services, state)
 	go func() {
-		select {
-		case state := <-s.observerChan:
-			s.setServingStatus(services, state)
-		default:
-			if s.hs != nil {
-				s.hs.Shutdown()
+		for {
+			select {
+			case <-done:
+				return
+			case state := <-s.observerChan:
+				s.setServingStatus(services, state)
 			}
 		}
 	}()

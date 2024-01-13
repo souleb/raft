@@ -201,43 +201,42 @@ func New(peers map[uint]string, id int32, port uint16, storage storage.Store, lo
 }
 
 func (r *RaftNode) Run(ctx context.Context, secure bool) error {
-	// var retErr error
+	var retErr error
 	ctx, cancel := context.WithCancel(ctx)
 	r.cancel = cancel
 
-	// r.startOnce.Do(func() {
-	r.logger.Info("starting raft node", slog.Int("id", int(r.GetID())))
-	err := r.RPCServer.Run(ctx, r.peers, secure)
-	if err != nil {
-		return fmt.Errorf("error while connecting to peers: %w", err)
-		// return
-	}
+	r.startOnce.Do(func() {
+		r.logger.Info("starting raft node", slog.Int("id", int(r.GetID())))
+		retErr = r.RPCServer.Run(ctx, r.peers, secure)
+		if retErr != nil {
+			return
+		}
 
-	go r.runStateMachine(ctx)
-	go r.commitEntries(ctx)
-	r.start.Lock()
-	r.started = true
-	r.start.Unlock()
-	// })
+		go r.runStateMachine(ctx)
+		go r.commitEntries(ctx)
+		r.start.Lock()
+		r.started = true
+		r.start.Unlock()
+	})
 
-	return nil
+	return retErr
 }
 
 // Stop tells the RaftNode to shut itself down.
 func (r *RaftNode) Stop() error {
 	var retErr error
 
-	// r.stopOnce.Do(func() {
-	r.logger.Info("raft node is stopping", slog.Int("id", int(r.GetID())))
-	r.stop.Lock()
-	r.stopped = true
-	r.stop.Unlock()
-	r.cancel()
-	retErr = <-r.errChan
-	r.RPCServer.Stop()
-	r.state.setLeader(false)
-	r.logger.Info("raft node is stopped", slog.Int("id", int(r.GetID())))
-	// })
+	r.stopOnce.Do(func() {
+		r.logger.Info("raft node is stopping", slog.Int("id", int(r.GetID())))
+		r.stop.Lock()
+		r.stopped = true
+		r.stop.Unlock()
+		r.cancel()
+		retErr = <-r.errChan
+		r.RPCServer.Stop()
+		r.state.setLeader(false)
+		r.logger.Info("raft node is stopped", slog.Int("id", int(r.GetID())))
+	})
 
 	return retErr
 }

@@ -89,7 +89,8 @@ type RPCServer struct {
 	applyEntryRPCChan    chan ApplyRequest
 	options
 	// Lock to protect shared access to this peer's state
-	mu   sync.RWMutex
+	mu sync.RWMutex
+	// done is used to stop the health server.
 	done chan struct{}
 }
 
@@ -167,10 +168,6 @@ func (s *RPCServer) Run(ctx context.Context, peers map[uint]string, secure bool)
 	}
 
 	// start server
-	if s.grpcServer != nil {
-		return fmt.Errorf("server already started")
-	}
-
 	err := s.start()
 	if err != nil {
 		return fmt.Errorf("error while starting the grpc server: %w", err)
@@ -222,7 +219,6 @@ func (s *RPCServer) setPeerConn(conn *grpc.ClientConn, index uint) {
 }
 
 func (s *RPCServer) connectToPeers(ctx context.Context, peers map[uint]string, secure bool) error {
-	// TODO: handle TLS and Use insecure.NewCredentials() for testing
 	opts := makeOpts(secure)
 
 	if s.peersConn == nil {
@@ -277,11 +273,10 @@ func (s *RPCServer) start() error {
 // Stop stops the server.
 func (s *RPCServer) Stop() {
 	if s.hs != nil {
+		s.done <- struct{}{}
 		s.hs.Shutdown()
 	}
-	s.done <- struct{}{}
 	s.grpcServer.Stop()
-	s.grpcServer = nil
 }
 
 // Notify is used to observe the state of the node. It implements the Observer
