@@ -13,6 +13,7 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
+	"sync"
 	"testing"
 	"time"
 
@@ -674,15 +675,12 @@ func TestRaftNode_Persist(t *testing.T) {
 
 	// restart nodes
 	for _, node := range nodes {
-		go func(node *RaftNode) {
-			err := node.Run(ctx, false)
-			require.NoError(t, err)
-		}(node)
+		// reset once to simulate a restart
+		restartNode(ctx, t, node)
 	}
-	//time.Sleep(2 * RaftElectionTimeout)
 
 	// check that there is a leader
-	_, err = checkLeaderIsElected(nodes)
+	leader, err := checkLeaderIsElected(nodes)
 	require.NoError(t, err)
 
 	// get a connection to the leader
@@ -704,11 +702,43 @@ func TestRaftNode_Persist(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, ok)
 
+	// restart leader
+	err = stopNode(leader)
+	require.NoError(t, err)
+
+	restartNode(ctx, t, leader)
+
+	// a new leader should be elected.
+	_, err = checkLeaderIsElected(nodes)
+	require.NoError(t, err)
+
+	// the leader and remaining follower should be
+	// able to agree despite the disconnected server.
+	sn = uint64(3)
+	_, err = client.ApplyEntry(ctx, &pb.ApplyRequest{Entry: []byte("hello3"), SerialNumber: int64(sn)})
+	require.NoError(t, err)
+
+	// check that the entry was committed
+	ok, err = checkValueIsCommitted(sn, nodes, len(nodes), []byte("hello3"), 0)
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	time.Sleep(RaftElectionTimeout)
+
 	// stop nodes
 	for _, node := range nodes {
 		err := node.Stop()
 		require.NoError(t, err)
 	}
+}
+
+func restartNode(ctx context.Context, t *testing.T, node *RaftNode) {
+	go func(node *RaftNode) {
+		node.startOnce = sync.Once{}
+		node.stopOnce = sync.Once{}
+		err := node.Run(ctx, false)
+		require.NoError(t, err)
+	}(node)
 }
 
 func checkValueIsCommitted(index uint64, nodes []*RaftNode, expectedNodes int, value []byte, retry int) (bool, error) {
