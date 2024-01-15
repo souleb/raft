@@ -1,4 +1,4 @@
-GO_TEST_ARGS ?= GO111MODULE=on
+GO_TEST_ARGS ?= -race
 
 .PHONY: proto-raft
 proto-raft: ## Compile the proto file.
@@ -15,4 +15,3 @@ proto-raft-client: ## Compile the proto file.
 .PHONY: unit-tests
 unit-tests: ## Run unit tests.
 	go test -v -cover $(GO_TEST_ARGS) ./...
-	
