@@ -54,3 +54,27 @@ message AppendEntriesResponse {
   uint64 term = 1;
   bool success = 2;
 }
+
+// The raft InstallSnapshot RPC
+service InstallSnapshot {
+  // InstallSnapshot is invoked by the leader to send chunks of a snapshot to a follower.
+  // Leaders always send chunks in order.
+  rpc SendChunk(SendChunkRequest) returns (SendChunkResponse) {}
+}
+
+// The raft InstallSnapshot RPC arguments structure.
+message SendChunkRequest {
+  uint64 term = 1;
+  int32 leaderId = 2;
+  uint64 lastIncludedIndex = 3;
+  uint64 lastIncludedTerm = 4;
+  uint64 offset = 5;
+  bytes data = 6;
+  bool done = 7;
+}
+
+// The raft InstallSnapshot RPC response structure.
+message SendChunkResponse {
+  uint64 term = 1;
+  bool success = 2;
+}

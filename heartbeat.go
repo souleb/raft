@@ -29,6 +29,8 @@ func (h *heartbeat) start(ctx context.Context) {
 	go h.heartbeat(ctx)
 }
 
+// TODO: reset the timer when a new append entry has just been sent by the leader
+// this will prevent the leader from sending a heartbeat when it has just sent an append entry
 func (h *heartbeat) heartbeat(ctx context.Context) {
 	// send the first heartbeat
 	h.logger.Debug("sending first heartbeat", slog.Int("id", int(h.r.GetID())),

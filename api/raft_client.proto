@@ -6,6 +6,7 @@ package api;
 // The ApplyEntry RPC.
 service ApplyEntry {
   // RequestVote is called by candidates to gather votes.
+  // TODO: enable sending multiple entries at once.
   rpc ApplyEntry(ApplyRequest) returns (ApplyResponse) {}
 }
 

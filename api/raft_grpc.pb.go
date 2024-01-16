@@ -195,3 +195,93 @@ var AppendEntries_ServiceDesc = grpc.ServiceDesc{
 	Streams:  []grpc.StreamDesc{},
 	Metadata: "api/raft.proto",
 }
+
+// InstallSnapshotClient is the client API for InstallSnapshot service.
+//
+// For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
+type InstallSnapshotClient interface {
+	// InstallSnapshot is invoked by the leader to send chunks of a snapshot to a follower.
+	// Leaders always send chunks in order.
+	SendChunk(ctx context.Context, in *SendChunkRequest, opts ...grpc.CallOption) (*SendChunkResponse, error)
+}
+
+type installSnapshotClient struct {
+	cc grpc.ClientConnInterface
+}
+
+func NewInstallSnapshotClient(cc grpc.ClientConnInterface) InstallSnapshotClient {
+	return &installSnapshotClient{cc}
+}
+
+func (c *installSnapshotClient) SendChunk(ctx context.Context, in *SendChunkRequest, opts ...grpc.CallOption) (*SendChunkResponse, error) {
+	out := new(SendChunkResponse)
+	err := c.cc.Invoke(ctx, "/api.InstallSnapshot/SendChunk", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// InstallSnapshotServer is the server API for InstallSnapshot service.
+// All implementations must embed UnimplementedInstallSnapshotServer
+// for forward compatibility
+type InstallSnapshotServer interface {
+	// InstallSnapshot is invoked by the leader to send chunks of a snapshot to a follower.
+	// Leaders always send chunks in order.
+	SendChunk(context.Context, *SendChunkRequest) (*SendChunkResponse, error)
+	mustEmbedUnimplementedInstallSnapshotServer()
+}
+
+// UnimplementedInstallSnapshotServer must be embedded to have forward compatible implementations.
+type UnimplementedInstallSnapshotServer struct {
+}
+
+func (UnimplementedInstallSnapshotServer) SendChunk(context.Context, *SendChunkRequest) (*SendChunkResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SendChunk not implemented")
+}
+func (UnimplementedInstallSnapshotServer) mustEmbedUnimplementedInstallSnapshotServer() {}
+
+// UnsafeInstallSnapshotServer may be embedded to opt out of forward compatibility for this service.
+// Use of this interface is not recommended, as added methods to InstallSnapshotServer will
+// result in compilation errors.
+type UnsafeInstallSnapshotServer interface {
+	mustEmbedUnimplementedInstallSnapshotServer()
+}
+
+func RegisterInstallSnapshotServer(s grpc.ServiceRegistrar, srv InstallSnapshotServer) {
+	s.RegisterService(&InstallSnapshot_ServiceDesc, srv)
+}
+
+func _InstallSnapshot_SendChunk_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SendChunkRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(InstallSnapshotServer).SendChunk(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/api.InstallSnapshot/SendChunk",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(InstallSnapshotServer).SendChunk(ctx, req.(*SendChunkRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+// InstallSnapshot_ServiceDesc is the grpc.ServiceDesc for InstallSnapshot service.
+// It's only intended for direct use with grpc.RegisterService,
+// and not to be introspected or modified (even as a copy)
+var InstallSnapshot_ServiceDesc = grpc.ServiceDesc{
+	ServiceName: "api.InstallSnapshot",
+	HandlerType: (*InstallSnapshotServer)(nil),
+	Methods: []grpc.MethodDesc{
+		{
+			MethodName: "SendChunk",
+			Handler:    _InstallSnapshot_SendChunk_Handler,
+		},
+	},
+	Streams:  []grpc.StreamDesc{},
+	Metadata: "api/raft.proto",
+}
