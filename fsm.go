@@ -293,7 +293,7 @@ func (r *RaftNode) getVotes(ctx context.Context, wg *sync.WaitGroup, respChan ch
 		lastIndex   uint64 = 0
 		lastLogTerm uint64 = 0
 	)
-	if len(r.state.log) > 0 {
+	if r.state.log.Length() > 0 {
 		lastIndex = r.state.log.LastIndex()
 		lastLogTerm = r.state.log.LastTerm()
 	}
@@ -432,7 +432,7 @@ func (r *RaftNode) commitEntries(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-r.commitIndexChan:
-			var entries log.LogEntries
+			var entries []log.LogEntry
 			if r.state.getCommitIndex() > r.state.getLastApplied() {
 				entries = r.state.getEntries(r.state.lastApplied+1, r.state.getCommitIndex()+1)
 				r.state.setLastApplied(r.state.getCommitIndex())

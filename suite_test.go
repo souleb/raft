@@ -165,7 +165,7 @@ func startNode(ctx context.Context, nodes []*RaftNode, node int) error {
 			newNode.SetCurrentTerm(n.GetCurrentTerm())
 			newNode.SetVotedFor(n.GetVotedFor())
 			newNode.SetLastApplied(n.GetLastApplied())
-			newNode.SetLog(n.GetLog())
+			newNode.SetLogs(0, n.GetLog())
 			nodes[i] = newNode
 			return newNode.Run(ctx, false)
 		}
@@ -196,7 +196,7 @@ func startNextNode(ctx context.Context, nodes []*RaftNode, node int) error {
 	// copy the state
 	newNode.SetCurrentTerm(nodes[nextIndex].GetCurrentTerm())
 	newNode.SetVotedFor(nodes[nextIndex].GetVotedFor())
-	newNode.SetLog(nodes[nextIndex].GetLog())
+	newNode.SetLogs(0, nodes[nextIndex].GetLog())
 	nodes[nextIndex] = newNode
 	return nodes[nextIndex].Run(ctx, false)
 }

@@ -53,10 +53,10 @@ func (s *state) resetElectionFields(term uint64, leader bool) {
 }
 
 // SetLogs sets the log entries for the RaftNode.
-func (s *state) SetLogs(log log.LogEntries) {
+func (s *state) SetLogs(start uint64, logs []log.LogEntry) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.log = log
+	s.log = log.New(start, logs)
 }
 
 func (s *state) getVotedFor() int32 {
@@ -130,16 +130,24 @@ func (s *state) getLogs(index uint64) []*log.LogEntry {
 	return s.log.GetEntriesSlice(index)
 }
 
-func (s *state) getEntriesFromIndex(index uint64) log.LogEntries {
+func (s *state) getEntriesFromIndex(index uint64) []log.LogEntry {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.log.GetEntriesFromIndex(index)
 }
 
-func (s *state) getEntries(minIndex, maxIndex uint64) log.LogEntries {
+func (s *state) getEntries(minIndex, maxIndex uint64) []log.LogEntry {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.log.GetEntries(minIndex, maxIndex)
+}
+
+func (s *state) getAllEntries() []log.LogEntry {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	l := make([]log.LogEntry, s.log.Length())
+	copy(l, s.log.GetAllEntries())
+	return l
 }
 
 func (s *state) getCommitIndex() uint64 {
@@ -200,7 +208,13 @@ func (s *state) initState() {
 	s.commitIndex = 0
 	s.currentTerm = 0
 	s.votedFor = -1
-	s.log = []log.LogEntry{{}} // first index is 1
+	s.log = log.New(0, []log.LogEntry{
+		{
+			Index:   0,
+			Term:    0,
+			Command: nil,
+		},
+	})
 }
 
 func (s *state) initLeaderVolatileState(peers map[uint]string) {
@@ -232,7 +246,7 @@ func (s *state) updateCommitIndex(commitIndex uint64) {
 	}
 }
 
-func (s *state) storeEntriesFromIndex(index uint64, entries log.LogEntries) {
+func (s *state) storeEntriesFromIndex(index uint64, entries []log.LogEntry) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.log.StoreEntriesFromIndex(index, entries)

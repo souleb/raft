@@ -319,24 +319,18 @@ func (r *RaftNode) SetVotedFor(id int32) {
 	r.state.votedFor = id
 }
 
-func (r *RaftNode) GetLogByIndex(index uint64) log.LogEntry {
+func (r *RaftNode) GetLogByIndex(index uint64) *log.LogEntry {
 	r.state.mu.RLock()
 	defer r.state.mu.RUnlock()
 	return r.state.log.GetLog(index)
 }
 
 func (r *RaftNode) GetLog() []log.LogEntry {
-	r.state.mu.RLock()
-	defer r.state.mu.RUnlock()
-	l := make([]log.LogEntry, len(r.state.log))
-	copy(l, r.state.log)
-	return l
+	return r.state.getAllEntries()
 }
 
-func (r *RaftNode) SetLog(log []log.LogEntry) {
-	r.state.mu.Lock()
-	defer r.state.mu.Unlock()
-	r.state.log = log
+func (r *RaftNode) SetLogs(start uint64, logs []log.LogEntry) {
+	r.state.SetLogs(start, logs)
 }
 
 func (r *RaftNode) GetPeers() map[uint]string {
@@ -436,6 +430,6 @@ func (r *RaftNode) restoreFromStorage() (err error) {
 		logEntries[i-start] = *log
 	}
 
-	r.state.SetLogs(logEntries)
+	r.state.SetLogs(start, logEntries)
 	return nil
 }
