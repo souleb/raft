@@ -71,11 +71,12 @@ type RaftNode struct {
 	cancel   context.CancelFunc
 
 	// id is this peer's id
-	id             int32
-	leaderID       int32
-	appendChan     chan server.AppendEntries
-	voteChan       chan server.VoteRequest
-	applyEntryChan chan server.ApplyRequest
+	id              int32
+	leaderID        int32
+	appendChan      chan server.AppendEntries
+	voteChan        chan server.VoteRequest
+	installSnapshot chan server.SnapshotRequest
+	applyEntryChan  chan server.ApplyRequest
 	// commitIndexChan is a channel that signals when the commit index has been updated.
 	commitIndexChan chan struct{}
 	// commitChan is a channel that receives committed entries from the RaftNode to be applied to the state machine.
@@ -174,10 +175,12 @@ func New(peers map[uint]string, id int32, port uint16, storage storage.Store, lo
 
 	appendEntriesRPCChan := make(chan server.AppendEntries)
 	voteRPCChan := make(chan server.VoteRequest)
+	installSnapshotRPCChan := make(chan server.SnapshotRequest)
 	applyEntryRPCChan := make(chan server.ApplyRequest)
 	r.appendChan = appendEntriesRPCChan
 	r.voteChan = voteRPCChan
 	r.applyEntryChan = applyEntryRPCChan
+	r.installSnapshot = installSnapshotRPCChan
 
 	r.errChan = make(chan error)
 
@@ -194,6 +197,7 @@ func New(peers map[uint]string, id int32, port uint16, storage storage.Store, lo
 	r.state.observers = append(r.state.observers, s)
 	r.RPCServer = s.SetVoteRPCChan(r.voteChan).
 		SetAppendEntryRPCChan(r.appendChan).
+		SetInstallSnapshotRPCChan(r.installSnapshot).
 		SetApplyEntryRPCChan(r.applyEntryChan)
 
 	return r, nil

@@ -732,6 +732,52 @@ func TestRaftNode_Persist(t *testing.T) {
 	}
 }
 
+// func Test_RaftNode_Snapshot(t *testing.T) {
+// 	nodeCount := 3
+// 	ctx := context.Background()
+// 	ports, err := getFreePorts(nodeCount)
+// 	require.NoError(t, err)
+// 	nodes, err := makeNodes(nodeCount, ports, logger)
+// 	require.NoError(t, err)
+
+// 	// start the nodes
+// 	for _, node := range nodes {
+// 		go func(node *RaftNode) {
+// 			err := node.Run(ctx, false)
+// 			require.NoError(t, err)
+// 		}(node)
+// 	}
+
+// 	// set nodeAddrs
+// 	for _, port := range ports {
+// 		nodeAddrs = append(nodeAddrs, fmt.Sprintf("localhost:%d", port))
+// 	}
+
+// 	// check that there is a leader
+// 	leader, err := checkLeaderIsElected(nodes)
+// 	require.NoError(t, err)
+
+// 	// get a connection to the leader
+// 	c := `{"healthCheckConfig": {"serviceName": "quis.RaftLeader"}, "loadBalancingConfig": [ { "round_robin": {} } ]}`
+// 	target := fmt.Sprintf("%s:///%s", nodeScheme, nodeServiceName)
+// 	conn, err := grpc.Dial(target, grpc.WithDefaultServiceConfig(c),
+// 		grpc.WithTransportCredentials(insecure.NewCredentials()),
+// 		grpc.WithDefaultCallOptions(grpc.WaitForReady(true)))
+
+// 	require.NoError(t, err)
+// 	defer conn.Close()
+
+// 	for i := 0; i < 100; i++ {
+// 		leaderIdx := 0
+// 		for j,node := range nodes {
+// 			if node.GetID() == leader.GetID() {
+// 				leaderIdx = j
+// 				break
+// 			}
+// 		n := nodes[leaderIdx+1%len(nodes)]
+// 	}
+// }
+
 func restartNode(ctx context.Context, t *testing.T, node *RaftNode) {
 	go func(node *RaftNode) {
 		node.startOnce = sync.Once{}

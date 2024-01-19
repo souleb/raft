@@ -79,8 +79,8 @@ func (r *RaftNode) restoreFromStorage() (err error) {
 func (r *RaftNode) Snapshot(index int, snapshot []byte) error {
 	// delete all log entries up to and including index
 	r.state.mu.Lock()
-	r.state.log.DeleteEntriesBefore(uint64(index))
 	start := r.state.log.Start()
+	r.state.log.DeleteEntriesBefore(uint64(index))
 	r.state.mu.Unlock()
 
 	// delete all entries up to and including index from the storage

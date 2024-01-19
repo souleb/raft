@@ -202,7 +202,7 @@ var AppendEntries_ServiceDesc = grpc.ServiceDesc{
 type InstallSnapshotClient interface {
 	// InstallSnapshot is invoked by the leader to send chunks of a snapshot to a follower.
 	// Leaders always send chunks in order.
-	SendChunk(ctx context.Context, in *SendChunkRequest, opts ...grpc.CallOption) (*SendChunkResponse, error)
+	InstallSnapshot(ctx context.Context, in *InstallSnapshotRequest, opts ...grpc.CallOption) (*InstallSnapshotResponse, error)
 }
 
 type installSnapshotClient struct {
@@ -213,9 +213,9 @@ func NewInstallSnapshotClient(cc grpc.ClientConnInterface) InstallSnapshotClient
 	return &installSnapshotClient{cc}
 }
 
-func (c *installSnapshotClient) SendChunk(ctx context.Context, in *SendChunkRequest, opts ...grpc.CallOption) (*SendChunkResponse, error) {
-	out := new(SendChunkResponse)
-	err := c.cc.Invoke(ctx, "/api.InstallSnapshot/SendChunk", in, out, opts...)
+func (c *installSnapshotClient) InstallSnapshot(ctx context.Context, in *InstallSnapshotRequest, opts ...grpc.CallOption) (*InstallSnapshotResponse, error) {
+	out := new(InstallSnapshotResponse)
+	err := c.cc.Invoke(ctx, "/api.InstallSnapshot/InstallSnapshot", in, out, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -228,7 +228,7 @@ func (c *installSnapshotClient) SendChunk(ctx context.Context, in *SendChunkRequ
 type InstallSnapshotServer interface {
 	// InstallSnapshot is invoked by the leader to send chunks of a snapshot to a follower.
 	// Leaders always send chunks in order.
-	SendChunk(context.Context, *SendChunkRequest) (*SendChunkResponse, error)
+	InstallSnapshot(context.Context, *InstallSnapshotRequest) (*InstallSnapshotResponse, error)
 	mustEmbedUnimplementedInstallSnapshotServer()
 }
 
@@ -236,8 +236,8 @@ type InstallSnapshotServer interface {
 type UnimplementedInstallSnapshotServer struct {
 }
 
-func (UnimplementedInstallSnapshotServer) SendChunk(context.Context, *SendChunkRequest) (*SendChunkResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method SendChunk not implemented")
+func (UnimplementedInstallSnapshotServer) InstallSnapshot(context.Context, *InstallSnapshotRequest) (*InstallSnapshotResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method InstallSnapshot not implemented")
 }
 func (UnimplementedInstallSnapshotServer) mustEmbedUnimplementedInstallSnapshotServer() {}
 
@@ -252,20 +252,20 @@ func RegisterInstallSnapshotServer(s grpc.ServiceRegistrar, srv InstallSnapshotS
 	s.RegisterService(&InstallSnapshot_ServiceDesc, srv)
 }
 
-func _InstallSnapshot_SendChunk_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(SendChunkRequest)
+func _InstallSnapshot_InstallSnapshot_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(InstallSnapshotRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(InstallSnapshotServer).SendChunk(ctx, in)
+		return srv.(InstallSnapshotServer).InstallSnapshot(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: "/api.InstallSnapshot/SendChunk",
+		FullMethod: "/api.InstallSnapshot/InstallSnapshot",
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(InstallSnapshotServer).SendChunk(ctx, req.(*SendChunkRequest))
+		return srv.(InstallSnapshotServer).InstallSnapshot(ctx, req.(*InstallSnapshotRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -278,8 +278,8 @@ var InstallSnapshot_ServiceDesc = grpc.ServiceDesc{
 	HandlerType: (*InstallSnapshotServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{
-			MethodName: "SendChunk",
-			Handler:    _InstallSnapshot_SendChunk_Handler,
+			MethodName: "InstallSnapshot",
+			Handler:    _InstallSnapshot_InstallSnapshot_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

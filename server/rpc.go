@@ -12,6 +12,22 @@ import (
 	"google.golang.org/grpc/status"
 )
 
+// SnapshotRequest is a message sent to the raft node to install a snapshot.
+type SnapshotRequest struct {
+	// Term is the observed term of the leader.
+	Term uint64
+	// LeaderId is the ID of the leader.
+	LeaderId int32
+	// LastIncludedIndex is the index of the log entry immediately preceding the new ones.
+	LastIncludedIndex uint64
+	// LastIncludedTerm is the term of the log entry immediately preceding the new ones.
+	LastIncludedTerm uint64
+	// Data is the snapshot data.
+	Data []byte
+	// ResponseChan is the channel to send the response to.
+	ResponseChan chan RPCResponse
+}
+
 // AppendEntries is a message sent to the a raft node to append entries to the log.
 type AppendEntries struct {
 	// Term is the observed term of the leader.
@@ -61,6 +77,11 @@ type RPCResponse struct {
 	// Response is the response to the request. It is true if the request was
 	// accepted.
 	Response bool
+
+	// ConflictTerm is the term of the conflicting entry.
+	ConflictTerm uint64
+	// ConflictIdx is the index of the first entry with the conflicting term.
+	ConflictIdx uint64
 }
 
 // RequestVote is called by candidates to gather votes. It receives a vote request
@@ -127,6 +148,30 @@ func (s *RPCServer) AppendEntries(ctx context.Context, in *pb.AppendEntriesReque
 	return &pb.AppendEntriesResponse{Term: response.Term, Success: response.Response}, nil
 }
 
+func (s *RPCServer) InstallSnapshot(ctx context.Context, in *pb.InstallSnapshotRequest) (*pb.InstallSnapshotResponse, error) {
+	term, _ := s.getStateFunc()
+	if in.GetTerm() < term {
+		return &pb.InstallSnapshotResponse{
+			Term: term,
+		}, nil
+	}
+
+	reply := make(chan RPCResponse)
+	s.installSnapshotRPCChan <- SnapshotRequest{
+		Term:              in.GetTerm(),
+		LeaderId:          in.GetLeaderId(),
+		LastIncludedIndex: in.GetLastIncludedIndex(),
+		LastIncludedTerm:  in.GetLastIncludedTerm(),
+		Data:              in.GetData(),
+		ResponseChan:      reply,
+	}
+
+	response := <-reply
+
+	return &pb.InstallSnapshotResponse{Term: response.Term}, nil
+
+}
+
 // SendRequestVote sends a request vote to a node. The node is identified by its
 // ID. It returns an error if the node is not connected and marks the node as
 // dead.
@@ -150,7 +195,7 @@ func (s *RPCServer) SendRequestVote(ctx context.Context, node uint, req VoteRequ
 		}
 		return nil, &errors.Error{StatusCode: errors.Code(st.Code()), Err: err}
 	}
-	return &RPCResponse{resp.GetTerm(), resp.GetVoteGranted()}, nil
+	return &RPCResponse{Term: resp.GetTerm(), Response: resp.GetVoteGranted()}, nil
 }
 
 // SendAppendEntries sends an append entries to a node. The node is identified by
@@ -190,7 +235,31 @@ func (s *RPCServer) SendAppendEntries(ctx context.Context, node uint, req Append
 		return nil, &errors.Error{StatusCode: errors.Code(st.Code()), Err: err}
 	}
 
-	return &RPCResponse{resp.GetTerm(), resp.GetSuccess()}, nil
+	return &RPCResponse{Term: resp.GetTerm(), Response: resp.GetSuccess()}, nil
+}
+
+func (s *RPCServer) SendInstallSnapshotRPC(ctx context.Context, node uint, req SnapshotRequest) (*RPCResponse, error) {
+	if s.isPeerDead(node) {
+		return nil, fmt.Errorf("cannot send install snapshot to node %d: node is dead", node)
+	}
+	client := pb.NewInstallSnapshotClient(s.GetPeerConn(node))
+	resp, err := client.InstallSnapshot(ctx, &pb.InstallSnapshotRequest{
+		Term:              req.Term,
+		LeaderId:          req.LeaderId,
+		LastIncludedIndex: req.LastIncludedIndex,
+		LastIncludedTerm:  req.LastIncludedTerm,
+		Data:              req.Data,
+	})
+	if err != nil {
+		// mark the conn as dead
+		s.setPeerDead(node)
+		st, ok := status.FromError(err)
+		if !ok {
+			return nil, fmt.Errorf("failed to send install snapshot to node %d: %w", node, err)
+		}
+		return nil, &errors.Error{StatusCode: errors.Code(st.Code()), Err: err}
+	}
+	return &RPCResponse{Term: resp.GetTerm()}, nil
 }
 
 // ApplyEntry is called by clients to apply a command. It receives an apply entry

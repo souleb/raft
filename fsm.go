@@ -113,6 +113,7 @@ func (r *RaftNode) handleAppendEntries(req server.AppendEntries) {
 		req.ResponseChan <- server.RPCResponse{
 			Term:     r.state.getCurrentTerm(),
 			Response: false,
+			// Add conflict index and term
 		}
 		return
 	}

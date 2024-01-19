@@ -253,7 +253,7 @@ func (s *MemoryStore) load() (err error) {
 				return err
 			}
 			max := binary.LittleEndian.Uint64(buf)
-			for i := min; i < max; i++ {
+			for i := min; i <= max; i++ {
 				delete(s.logDB, i)
 			}
 			s.fillFirstAndLastIndex()

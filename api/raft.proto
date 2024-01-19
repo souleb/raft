@@ -53,28 +53,27 @@ message AppendEntriesRequest {
 message AppendEntriesResponse {
   uint64 term = 1;
   bool success = 2;
+  uint64 conflictTerm = 3;
+  uint64 conflictIndex = 4;
 }
 
 // The raft InstallSnapshot RPC
 service InstallSnapshot {
   // InstallSnapshot is invoked by the leader to send chunks of a snapshot to a follower.
   // Leaders always send chunks in order.
-  rpc SendChunk(SendChunkRequest) returns (SendChunkResponse) {}
+  rpc InstallSnapshot(InstallSnapshotRequest) returns (InstallSnapshotResponse) {}
 }
 
 // The raft InstallSnapshot RPC arguments structure.
-message SendChunkRequest {
+message InstallSnapshotRequest {
   uint64 term = 1;
   int32 leaderId = 2;
   uint64 lastIncludedIndex = 3;
   uint64 lastIncludedTerm = 4;
-  uint64 offset = 5;
   bytes data = 6;
-  bool done = 7;
 }
 
 // The raft InstallSnapshot RPC response structure.
-message SendChunkResponse {
+message InstallSnapshotResponse {
   uint64 term = 1;
-  bool success = 2;
 }

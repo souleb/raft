@@ -47,6 +47,8 @@ type Server interface {
 	SetAppendEntryRPCChan(appendEntriesChan chan AppendEntries) Server
 	// SetApplyEntryRPCChan sets the channel to send entries to apply to the fsm.
 	SetApplyEntryRPCChan(applyEntryChan chan ApplyRequest) Server
+	//SetInstallSnapshotRPCChan sets the channel to send snapshot to the fsm.
+	SetInstallSnapshotRPCChan(installSnapshotChan chan SnapshotRequest) Server
 	// Stop stops the server.
 	Stop()
 }
@@ -77,16 +79,18 @@ type RPCServer struct {
 	pb.UnimplementedAppendEntriesServer
 	pb.UnimplementedVoteServer
 	pb.UnimplementedApplyEntryServer
-	peersConn            map[uint]*grpc.ClientConn
-	deadPeersConn        map[uint]bool
-	id                   int
-	port                 uint16
-	grpcServer           *grpc.Server
-	hs                   *health.Server
-	observerChan         chan bool
-	voteRPCChan          chan VoteRequest
-	appendEntriesRPCChan chan AppendEntries
-	applyEntryRPCChan    chan ApplyRequest
+	pb.UnimplementedInstallSnapshotServer
+	peersConn              map[uint]*grpc.ClientConn
+	deadPeersConn          map[uint]bool
+	id                     int
+	port                   uint16
+	grpcServer             *grpc.Server
+	hs                     *health.Server
+	observerChan           chan bool
+	voteRPCChan            chan VoteRequest
+	appendEntriesRPCChan   chan AppendEntries
+	applyEntryRPCChan      chan ApplyRequest
+	installSnapshotRPCChan chan SnapshotRequest
 	options
 	// Lock to protect shared access to this peer's state
 	mu sync.RWMutex
@@ -157,6 +161,12 @@ func (s *RPCServer) SetVoteRPCChan(voteChan chan VoteRequest) Server {
 // SetAppendEntryRPCChan sets the channel to send entries to replicate to the fsm.
 func (s *RPCServer) SetAppendEntryRPCChan(appendEntriesChan chan AppendEntries) Server {
 	s.appendEntriesRPCChan = appendEntriesChan
+	return s
+}
+
+// SetInstallSnapshotRPCChan sets the channel to send snapshot to the fsm.
+func (s *RPCServer) SetInstallSnapshotRPCChan(installSnapshotChan chan SnapshotRequest) Server {
+	s.installSnapshotRPCChan = installSnapshotChan
 	return s
 }
 
