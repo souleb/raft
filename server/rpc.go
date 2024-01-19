@@ -23,7 +23,7 @@ type AppendEntries struct {
 	// PrevLogTerm is the term of the log entry immediately preceding the new ones.
 	PrevLogTerm uint64
 	// Entries are the log entries to append.
-	Entries []log.LogEntry
+	Entries []*log.LogEntry
 	// LeaderCommit is the leader's commit index.
 	LeaderCommit uint64
 	// ResponseChan is the channel to send the response to.
@@ -107,13 +107,13 @@ func (s *RPCServer) AppendEntries(ctx context.Context, in *pb.AppendEntriesReque
 		LeaderId:     in.GetLeaderId(),
 		PrevLogIndex: in.GetPrevLogIndex(),
 		PrevLogTerm:  in.GetPrevLogTerm(),
-		Entries:      make([]log.LogEntry, 0, len(in.GetEntries())),
+		Entries:      make([]*log.LogEntry, 0, len(in.GetEntries())),
 		LeaderCommit: in.GetLeaderCommit(),
 		ResponseChan: reply,
 	}
 
 	for _, entry := range in.GetEntries() {
-		r.Entries = append(r.Entries, log.LogEntry{
+		r.Entries = append(r.Entries, &log.LogEntry{
 			Term:    entry.GetTerm(),
 			Command: entry.GetCommand(),
 			Sn:      entry.GetSerialNumber(),

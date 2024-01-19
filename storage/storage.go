@@ -507,13 +507,13 @@ func (s *MemoryStore) updateFirstAndLastIndex(log *log.LogEntry) {
 
 func (s *MemoryStore) fillFirstAndLastIndex() {
 	s.firstIndex, s.lastIndex = 0, 0
-	for idx := range s.logDB {
+	for _, log := range s.logDB {
 		if s.firstIndex == 0 {
-			s.firstIndex, s.lastIndex = idx, idx
-		} else if idx < s.firstIndex {
-			s.firstIndex = idx
-		} else if idx > s.lastIndex {
-			s.lastIndex = idx
+			s.firstIndex, s.lastIndex = log.Index, log.Index
+		} else if log.Index < s.firstIndex {
+			s.firstIndex = log.Index
+		} else if log.Index > s.lastIndex {
+			s.lastIndex = log.Index
 		}
 	}
 }

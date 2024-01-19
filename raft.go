@@ -8,7 +8,6 @@ import (
 
 	"log/slog"
 
-	"github.com/souleb/raft/errors"
 	"github.com/souleb/raft/log"
 	"github.com/souleb/raft/server"
 	"github.com/souleb/raft/storage"
@@ -81,7 +80,7 @@ type RaftNode struct {
 	commitIndexChan chan struct{}
 	// commitChan is a channel that receives committed entries from the RaftNode to be applied to the state machine.
 	// It is buffered to allow the RaftNode to continue committing entries while the state machine is busy.
-	CommitChan chan log.LogEntry
+	CommitChan chan *log.LogEntry
 	// errChan is a channel that receives errors from the RaftNode.
 	errChan chan error
 	// Lock to protect shared access to this peer's fields
@@ -171,7 +170,7 @@ func New(peers map[uint]string, id int32, port uint16, storage storage.Store, lo
 		r.bufferSize = defaultBufferSize
 	}
 
-	r.CommitChan = make(chan log.LogEntry, defaultBufferSize)
+	r.CommitChan = make(chan *log.LogEntry, defaultBufferSize)
 
 	appendEntriesRPCChan := make(chan server.AppendEntries)
 	voteRPCChan := make(chan server.VoteRequest)
@@ -325,11 +324,11 @@ func (r *RaftNode) GetLogByIndex(index uint64) *log.LogEntry {
 	return r.state.log.GetLog(index)
 }
 
-func (r *RaftNode) GetLog() []log.LogEntry {
+func (r *RaftNode) GetLog() []*log.LogEntry {
 	return r.state.getAllEntries()
 }
 
-func (r *RaftNode) SetLogs(start uint64, logs []log.LogEntry) {
+func (r *RaftNode) SetLogs(start uint64, logs []*log.LogEntry) {
 	r.state.SetLogs(start, logs)
 }
 
@@ -365,71 +364,4 @@ func (r *RaftNode) getCurrentTermCallback() func() (uint64, bool) {
 	return func() (uint64, bool) {
 		return r.GetState()
 	}
-}
-
-func (r *RaftNode) persistCurrentTerm() error {
-	if err := r.storage.SetUint64([]byte(termStorageKey), r.GetCurrentTerm()); err != nil {
-		return err
-	}
-	return nil
-}
-
-func (r *RaftNode) persistVotedFor() error {
-	if err := r.storage.SetUint64([]byte(votedForStorageKey), uint64(r.GetVotedFor())); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func (r *RaftNode) persistLogs(logs []*log.LogEntry) error {
-	if err := r.storage.StoreLogs(logs); err != nil {
-		return err
-	}
-	return nil
-}
-
-func (r *RaftNode) restoreFromStorage() (err error) {
-	if term, err := r.storage.GetUint64([]byte(termStorageKey)); err == nil {
-		r.state.setCurrentTerm(term)
-	} else {
-		if !errors.Is(err, errors.NotFound) {
-			return err
-		}
-	}
-
-	if votedFor, err := r.storage.GetUint64([]byte(votedForStorageKey)); err == nil {
-		r.state.setVotedFor(int32(votedFor))
-	} else {
-		if !errors.Is(err, errors.NotFound) {
-			return err
-		}
-	}
-
-	start, err := r.storage.FirstIndex()
-	if err != nil {
-		return err
-	}
-	// first log entry is at index 1
-	if start == 0 {
-		return nil
-	}
-
-	end, err := r.storage.LastIndex()
-	if err != nil {
-		return err
-	}
-
-	logEntries := make([]log.LogEntry, end-start+1)
-	for i := start; i <= end; i++ {
-		log, err := r.storage.GetLog(i)
-		if err != nil {
-			return err
-		}
-		// set the index of the log entry to start at 0
-		logEntries[i-start] = *log
-	}
-
-	r.state.SetLogs(start, logEntries)
-	return nil
 }

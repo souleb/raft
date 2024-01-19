@@ -242,7 +242,7 @@ func (r *RaftNode) leader(ctx context.Context) stateFn {
 				break
 			}
 			entry := log.LogEntry{Term: r.state.getCurrentTerm(), Command: req.Command, Sn: req.Sn}
-			r.state.appendEntry(entry)
+			r.state.appendEntry(&entry)
 			r.persistLogs(r.state.getLogs(r.state.getLastIndex()))
 			// send the new entry to all peers
 			responseTerm, commited := r.appendEntry(ctx, &wg)
@@ -432,7 +432,7 @@ func (r *RaftNode) commitEntries(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-r.commitIndexChan:
-			var entries []log.LogEntry
+			var entries []*log.LogEntry
 			if r.state.getCommitIndex() > r.state.getLastApplied() {
 				entries = r.state.getEntries(r.state.lastApplied+1, r.state.getCommitIndex()+1)
 				r.state.setLastApplied(r.state.getCommitIndex())

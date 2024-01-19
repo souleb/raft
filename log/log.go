@@ -23,16 +23,16 @@ func (l *LogEntry) String() string {
 // LogEntries is a slice of LogEntry.
 type LogEntries struct {
 	// entries holds the log entries.
-	entries []LogEntry
+	entries []*LogEntry
 	// start is the index of the first entry in the log.
 	start uint64
 }
 
-func New(idx uint64, entries []LogEntry) LogEntries {
+func New(idx uint64, entries []*LogEntry) LogEntries {
 	l := LogEntries{
 		start: idx,
 	}
-	l.entries = make([]LogEntry, len(entries))
+	l.entries = make([]*LogEntry, len(entries))
 	if len(entries) > 0 {
 		copy(l.entries, entries)
 	}
@@ -59,7 +59,7 @@ func (l LogEntries) Last() *LogEntry {
 	if len(l.entries) == 0 {
 		return nil
 	}
-	return &l.entries[len(l.entries)-1]
+	return l.entries[len(l.entries)-1]
 }
 
 // LastTerm returns the Term of the last entry in the log.
@@ -99,18 +99,18 @@ func (l LogEntries) GetLog(index uint64) *LogEntry {
 	if len(l.entries) == 0 || index > l.LastIndex() {
 		return nil
 	}
-	return &l.entries[index-l.start]
+	return l.entries[index-l.start]
 }
 
 // AppendEntry appends an entry to the log.
-func (l *LogEntries) AppendEntry(entry LogEntry) {
+func (l *LogEntries) AppendEntry(entry *LogEntry) {
 	// save the index of the entry in the log
 	entry.Index = l.LastIndex() + 1
 	l.entries = append(l.entries, entry)
 }
 
 // GetEntries returns the entries between the given indexes.
-func (l *LogEntries) GetEntries(minIndex, maxIndex uint64) []LogEntry {
+func (l *LogEntries) GetEntries(minIndex, maxIndex uint64) []*LogEntry {
 	if minIndex > maxIndex {
 		return nil
 	}
@@ -130,13 +130,13 @@ func (l *LogEntries) GetEntriesSlice(index uint64) []*LogEntry {
 	}
 	res := make([]*LogEntry, l.LastIndex()-index+1)
 	for i := index; i <= l.LastIndex(); i++ {
-		res[i-index] = &l.entries[i-l.start]
+		res[i-index] = l.entries[i-l.start]
 	}
 	return res
 }
 
 // GetEntriesFromIndex returns the entries from the given index.
-func (l *LogEntries) GetEntriesFromIndex(index uint64) []LogEntry {
+func (l *LogEntries) GetEntriesFromIndex(index uint64) []*LogEntry {
 	if index > l.LastIndex() {
 		return nil
 	}
@@ -156,7 +156,7 @@ func (l *LogEntries) MatchEntry(prevLogIndex uint64, prevLogTerm uint64) bool {
 // If the existing entry conflicts with a new one (same index but different terms),
 // delete the existing entry and all that follow it and append the new entries.
 // If the new entry is not in the existing log, append it.
-func (l *LogEntries) StoreEntriesFromIndex(index uint64, entries []LogEntry) {
+func (l *LogEntries) StoreEntriesFromIndex(index uint64, entries []*LogEntry) {
 	// fill in the index of the entries
 	setIndexes(entries, index)
 
@@ -176,14 +176,14 @@ func (l *LogEntries) StoreEntriesFromIndex(index uint64, entries []LogEntry) {
 	}
 }
 
-func setIndexes(entries []LogEntry, index uint64) {
+func setIndexes(entries []*LogEntry, index uint64) {
 	for i, entry := range entries {
 		entry.Index = index + uint64(i)
 	}
 }
 
 // GetAllEntries returns all the entries in the log.
-func (l LogEntries) GetAllEntries() []LogEntry {
+func (l LogEntries) GetAllEntries() []*LogEntry {
 	return l.entries
 }
 
