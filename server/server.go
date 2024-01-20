@@ -33,6 +33,8 @@ type Sender interface {
 	SendAppendEntries(ctx context.Context, node uint, req AppendEntries) (*RPCResponse, error)
 	// SendRequestVote sends a VoteRequest RPC to the given node.
 	SendRequestVote(ctx context.Context, node uint, req VoteRequest) (*RPCResponse, error)
+	// SendInstallSnapshot sends an InstallSnapshot RPC to the given node.
+	SendInstallSnapshot(ctx context.Context, node uint, req SnapshotRequest) (*RPCResponse, error)
 }
 
 // Server is the interface that wraps the basic methods for communicating with

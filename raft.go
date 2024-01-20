@@ -31,6 +31,16 @@ const (
 	votedForStorageKey = "votedFor"
 )
 
+// CommitType is the type of commit.
+type CommitType int
+
+const (
+	// Snapshot is a commit type for a snapshot.
+	Snapshot CommitType = iota
+	// Entry is a commit type for a log entry.
+	Entry
+)
+
 // OptionsFn is a function that sets an option.
 type OptionsFn func(opt Options)
 
@@ -47,6 +57,22 @@ type Options struct {
 	timeout int
 	// bufferSize is the length of the commitChan.
 	bufferSize int
+}
+
+// ApplyMsg is a message sent to the RaftNode to apply to the state machine.
+type ApplyMsg struct {
+	// CommitType is the type of commit.
+	CommitType CommitType
+	// Entry is the log entry to commit.
+	Command []byte
+	// CommandIndex is the index of the log entry to commit.
+	CommandIndex uint64
+	// Snapshot is the snapshot to commit.
+	Snapshot []byte
+	// SnapshotTerm is the term of the snapshot to commit.
+	SnapshotTerm uint64
+	// SnapshotIndex is the index of the snapshot to commit.
+	SnapshotIndex uint64
 }
 
 // RaftNode is a member of the Raft cluster
@@ -71,17 +97,17 @@ type RaftNode struct {
 	cancel   context.CancelFunc
 
 	// id is this peer's id
-	id              int32
-	leaderID        int32
-	appendChan      chan server.AppendEntries
-	voteChan        chan server.VoteRequest
-	installSnapshot chan server.SnapshotRequest
-	applyEntryChan  chan server.ApplyRequest
+	id                  int32
+	leaderID            int32
+	appendChan          chan server.AppendEntries
+	voteChan            chan server.VoteRequest
+	installSnapshotChan chan server.SnapshotRequest
+	applyEntryChan      chan server.ApplyRequest
 	// commitIndexChan is a channel that signals when the commit index has been updated.
 	commitIndexChan chan struct{}
 	// commitChan is a channel that receives committed entries from the RaftNode to be applied to the state machine.
 	// It is buffered to allow the RaftNode to continue committing entries while the state machine is busy.
-	CommitChan chan *log.LogEntry
+	CommitChan chan *ApplyMsg
 	// errChan is a channel that receives errors from the RaftNode.
 	errChan chan error
 	// Lock to protect shared access to this peer's fields
@@ -171,7 +197,7 @@ func New(peers map[uint]string, id int32, port uint16, storage storage.Store, lo
 		r.bufferSize = defaultBufferSize
 	}
 
-	r.CommitChan = make(chan *log.LogEntry, defaultBufferSize)
+	r.CommitChan = make(chan *ApplyMsg, defaultBufferSize)
 
 	appendEntriesRPCChan := make(chan server.AppendEntries)
 	voteRPCChan := make(chan server.VoteRequest)
@@ -180,7 +206,7 @@ func New(peers map[uint]string, id int32, port uint16, storage storage.Store, lo
 	r.appendChan = appendEntriesRPCChan
 	r.voteChan = voteRPCChan
 	r.applyEntryChan = applyEntryRPCChan
-	r.installSnapshot = installSnapshotRPCChan
+	r.installSnapshotChan = installSnapshotRPCChan
 
 	r.errChan = make(chan error)
 
@@ -197,7 +223,7 @@ func New(peers map[uint]string, id int32, port uint16, storage storage.Store, lo
 	r.state.observers = append(r.state.observers, s)
 	r.RPCServer = s.SetVoteRPCChan(r.voteChan).
 		SetAppendEntryRPCChan(r.appendChan).
-		SetInstallSnapshotRPCChan(r.installSnapshot).
+		SetInstallSnapshotRPCChan(r.installSnapshotChan).
 		SetApplyEntryRPCChan(r.applyEntryChan)
 
 	return r, nil

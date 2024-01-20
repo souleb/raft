@@ -29,7 +29,13 @@ type state struct {
 	// Observer is a list of observers that are notified when the RaftNode
 	// observes a change in leadership.
 	observers []Observer
-	mu        sync.RWMutex
+	// lastIncludedIndex is the index of the last entry in the snapshot.
+	lastIncludedIndex uint64
+	// lastIncludedTerm is the term of the last entry in the snapshot.
+	lastIncludedTerm uint64
+	// snapshot is the snapshot of the state machine.
+	snapshot []byte
+	mu       sync.RWMutex
 }
 
 func (s *state) setTermAndVote(term uint64, id int32) {
@@ -92,6 +98,42 @@ func (s *state) setLeader(leader bool) {
 	}
 }
 
+func (s *state) setLastIncludedIndex(index uint64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.lastIncludedIndex = index
+}
+
+func (s *state) setLastIncludedTerm(term uint64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.lastIncludedTerm = term
+}
+
+func (s *state) getLastIncludedIndex() uint64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.lastIncludedIndex
+}
+
+func (s *state) getLastIncludedTerm() uint64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.lastIncludedTerm
+}
+
+func (s *state) setSnapshot(snapshot []byte) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.snapshot = snapshot
+}
+
+func (s *state) getSnapshot() []byte {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.snapshot
+}
+
 func (s *state) getPeerNextIndex(peer uint) uint64 {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -150,6 +192,12 @@ func (s *state) getAllEntries() []*log.LogEntry {
 	return l
 }
 
+func (s *state) getConflictIndex(start, index uint64, term uint64) (bool, uint64) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.log.GetConflictIndex(start, index, term)
+}
+
 func (s *state) getCommitIndex() uint64 {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -162,17 +210,23 @@ func (s *state) setCommitIndex(index uint64) {
 	s.commitIndex = index
 }
 
+func (s *state) getFirstIndex() uint64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.log.Start()
+}
+
 func (s *state) getLogTerm(index uint64) uint64 {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.log.GetLogTerm(index)
 }
 
-func (s *state) matchEntry(prevLogIndex, prevLogTerm uint64) bool {
+func (s *state) matchEntry(prevLogIndex, prevLogTerm uint64) (bool, uint64, uint64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if prevLogIndex == 0 {
-		return true
+		return true, 0, 0
 	}
 	return s.log.MatchEntry(prevLogIndex, prevLogTerm)
 }
@@ -250,4 +304,10 @@ func (s *state) storeEntriesFromIndex(index uint64, entries []*log.LogEntry) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.log.StoreEntriesFromIndex(index, entries)
+}
+
+func (s *state) deleteEntriesBefore(index uint64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.log.DeleteEntriesBefore(index)
 }

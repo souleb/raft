@@ -238,7 +238,7 @@ func (s *RPCServer) SendAppendEntries(ctx context.Context, node uint, req Append
 	return &RPCResponse{Term: resp.GetTerm(), Response: resp.GetSuccess()}, nil
 }
 
-func (s *RPCServer) SendInstallSnapshotRPC(ctx context.Context, node uint, req SnapshotRequest) (*RPCResponse, error) {
+func (s *RPCServer) SendInstallSnapshot(ctx context.Context, node uint, req SnapshotRequest) (*RPCResponse, error) {
 	if s.isPeerDead(node) {
 		return nil, fmt.Errorf("cannot send install snapshot to node %d: node is dead", node)
 	}
