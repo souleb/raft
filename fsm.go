@@ -74,6 +74,32 @@ func (r *RaftNode) follower(ctx context.Context) stateFn {
 				Response: voted,
 			}
 			req.ResponseChan <- vote
+		case req := <-r.installSnapshotChan:
+			resetTimer(timer, randomWaitTime(min, max))
+			snapshot := req.Data
+			if err := r.persistSnapshot(snapshot); err != nil {
+				r.logger.Error("while persisting snapshot", slog.String("error", err.Error()))
+				req.ResponseChan <- server.RPCResponse{Term: r.state.getCurrentTerm(), Response: true}
+				break
+			}
+
+			start := r.state.getFirstIndex()
+			last := r.state.getLastIndex()
+			if start < req.LastIncludedIndex {
+				if last > req.LastIncludedIndex {
+					last = req.LastIncludedIndex + 1
+				}
+				r.state.deleteEntriesBefore(last)
+				err := r.storage.DeleteRange(start, last)
+				if err != nil {
+					r.logger.Error("while deleting entries from storage", slog.String("error", err.Error()))
+				}
+			} else {
+				r.state.SetLogs(req.LastIncludedIndex+1, []*log.LogEntry{})
+				r.storage.DeleteRange(start, last)
+			}
+			r.CommitChan <- &ApplyMsg{CommitType: Snapshot, Snapshot: snapshot, SnapshotIndex: req.LastIncludedIndex, SnapshotTerm: req.LastIncludedTerm}
+			req.ResponseChan <- server.RPCResponse{Term: r.state.getCurrentTerm(), Response: true}
 		case <-timer.C:
 			r.logger.Debug("election timeout, transitionning to candidate", slog.Int("id", int(r.GetID())),
 				slog.Int("currentTerm", int(r.state.getCurrentTerm())))
@@ -83,7 +109,7 @@ func (r *RaftNode) follower(ctx context.Context) stateFn {
 }
 
 func (r *RaftNode) handleAppendEntries(req server.AppendEntries) {
-	ok := r.state.matchEntry(req.PrevLogIndex, req.PrevLogTerm)
+	ok, index, term := r.state.matchEntry(req.PrevLogIndex, req.PrevLogTerm)
 
 	// check if commit index needs to be updated
 	if req.LeaderCommit > r.state.getCommitIndex() && ok {
@@ -111,9 +137,10 @@ func (r *RaftNode) handleAppendEntries(req server.AppendEntries) {
 			int(r.state.getCurrentTerm())), slog.Int("term", int(req.Term)), slog.Int("prevLogIndex",
 			int(req.PrevLogIndex)), slog.Int("prevLogTerm", int(req.PrevLogTerm)), slog.String("state", "follower"))
 		req.ResponseChan <- server.RPCResponse{
-			Term:     r.state.getCurrentTerm(),
-			Response: false,
-			// Add conflict index and term
+			Term:         r.state.getCurrentTerm(),
+			Response:     false,
+			ConflictTerm: term,
+			ConflictIdx:  index,
 		}
 		return
 	}
@@ -342,8 +369,15 @@ func (r *RaftNode) appendEntry(ctx context.Context, wg *sync.WaitGroup) (uint64,
 
 	for peer := range r.GetPeers() {
 		index := r.state.getPeerNextIndex(peer)
-		req.PrevLogIndex = index - 1
-		req.PrevLogTerm = r.state.getLogTerm(req.PrevLogIndex)
+		firstIndex := r.state.getFirstIndex()
+		if index < firstIndex {
+			// this means that a snapshot has been created and the log has been truncated
+			req.PrevLogIndex = r.state.getLastIncludedIndex()
+			req.PrevLogTerm = r.state.getLastIncludedTerm()
+		} else {
+			req.PrevLogIndex = index - 1
+			req.PrevLogTerm = r.state.getLogTerm(req.PrevLogIndex)
+		}
 		if r.state.getLastIndex() >= index {
 			wg.Add(1)
 			go func(peer uint, index uint64, req server.AppendEntries) {
@@ -353,7 +387,6 @@ func (r *RaftNode) appendEntry(ctx context.Context, wg *sync.WaitGroup) (uint64,
 					if err != nil {
 						if e, ok := err.(*errors.Error); !ok || e.StatusCode != errors.Canceled {
 							r.logger.Error("while sending appendEntries rpc", slog.String("error", err.Error()))
-							time.Sleep(time.Duration(r.heartbeatTimeout) * time.Millisecond)
 						}
 						respChan <- &server.RPCResponse{Term: r.state.getCurrentTerm(), Response: false}
 						wg.Done()
@@ -370,8 +403,37 @@ func (r *RaftNode) appendEntry(ctx context.Context, wg *sync.WaitGroup) (uint64,
 					}
 
 					if !resp.Response && resp.Term <= r.state.getCurrentTerm() {
-						// if fails because of inconsistency, decrement nextIndex and retry
-						r.state.decrementPeerNextIndex(peer)
+						// term of conflicting entry and first index it stores for that term
+						ok, idx := r.state.getConflictIndex(req.PrevLogIndex, resp.ConflictIdx, resp.ConflictTerm)
+						if !ok {
+							sResp, err := r.RPCServer.SendInstallSnapshot(ctx, peer, server.SnapshotRequest{
+								Term:              r.state.getCurrentTerm(),
+								LeaderId:          r.GetID(),
+								LastIncludedIndex: idx,
+								LastIncludedTerm:  r.state.getLogTerm(idx),
+								Data:              r.state.getSnapshot(),
+							})
+							if err != nil {
+								if e, ok := err.(*errors.Error); !ok || e.StatusCode != errors.Canceled {
+									r.logger.Error("while sending installSnapshot rpc", slog.String("error", err.Error()))
+								}
+								respChan <- &server.RPCResponse{Term: r.state.getCurrentTerm(), Response: false}
+								wg.Done()
+								return
+							}
+							if sResp.Term > r.state.getCurrentTerm() {
+								r.logger.Debug("received installSnapshot response with newer term, transitionnning to follower",
+									slog.Int("id", int(r.GetID())), slog.Int("currentTerm", int(r.state.getCurrentTerm())),
+									slog.Int("term", int(sResp.Term)), slog.Bool("response", sResp.Response))
+								respChan <- sResp
+								wg.Done()
+								return
+							}
+							// update to first index of the log
+							r.state.updatePeerNextIndex(peer, r.state.getFirstIndex())
+						} else {
+							r.state.updatePeerNextIndex(peer, idx)
+						}
 						continue
 					}
 
@@ -445,7 +507,7 @@ func (r *RaftNode) commitEntries(ctx context.Context) {
 			}
 			for _, entry := range entries {
 				select {
-				case r.CommitChan <- entry:
+				case r.CommitChan <- &ApplyMsg{Command: entry.Command, CommandIndex: entry.Index, CommitType: Entry}:
 				default:
 					r.logger.Error("commit channel is full, dropping entry", slog.Int("id", int(r.GetID())),
 						slog.Int("currentTerm", int(r.state.getCurrentTerm())), slog.Int("commitIndex",

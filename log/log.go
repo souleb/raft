@@ -88,7 +88,7 @@ func (l LogEntries) LastSN() int64 {
 
 // GetLogTerm returns the Term of the entry at the given index.
 func (l LogEntries) GetLogTerm(index uint64) uint64 {
-	if len(l.entries) == 0 || index > l.LastIndex() {
+	if len(l.entries) == 0 || index > l.LastIndex() || index < l.start {
 		return 0
 	}
 	return l.entries[index-l.start].Term
@@ -96,7 +96,7 @@ func (l LogEntries) GetLogTerm(index uint64) uint64 {
 
 // GetLog returns the entry at the given index.
 func (l LogEntries) GetLog(index uint64) *LogEntry {
-	if len(l.entries) == 0 || index > l.LastIndex() {
+	if len(l.entries) == 0 || index > l.LastIndex() || index < l.start {
 		return nil
 	}
 	return l.entries[index-l.start]
@@ -114,7 +114,7 @@ func (l *LogEntries) GetEntries(minIndex, maxIndex uint64) []*LogEntry {
 	if minIndex > maxIndex {
 		return nil
 	}
-	if minIndex > l.LastIndex() {
+	if minIndex > l.LastIndex() || minIndex < l.start {
 		return nil
 	}
 	if maxIndex > l.LastIndex() {
@@ -125,7 +125,7 @@ func (l *LogEntries) GetEntries(minIndex, maxIndex uint64) []*LogEntry {
 
 // GetEntriesSlice returns the entries between the given indexes.
 func (l *LogEntries) GetEntriesSlice(index uint64) []*LogEntry {
-	if index > l.LastIndex() {
+	if len(l.entries) == 0 || index > l.LastIndex() || index < l.start {
 		return nil
 	}
 	res := make([]*LogEntry, l.LastIndex()-index+1)
@@ -137,19 +137,52 @@ func (l *LogEntries) GetEntriesSlice(index uint64) []*LogEntry {
 
 // GetEntriesFromIndex returns the entries from the given index.
 func (l *LogEntries) GetEntriesFromIndex(index uint64) []*LogEntry {
-	if index > l.LastIndex() {
+	if len(l.entries) == 0 || index > l.LastIndex() || index < l.start {
 		return nil
 	}
 	return l.entries[index-l.start:]
 }
 
 // MatchEntry returns true if the given prevLogIndex and prevLogTerm match the log.
-func (l *LogEntries) MatchEntry(prevLogIndex uint64, prevLogTerm uint64) bool {
-	if l == nil || prevLogIndex > l.LastIndex() {
-		return false
+func (l *LogEntries) MatchEntry(prevLogIndex uint64, prevLogTerm uint64) (bool, uint64, uint64) {
+	if len(l.entries) == 0 || prevLogIndex > l.LastIndex() || prevLogIndex < l.start {
+		return false, 0, 0
 	}
 
-	return l.GetLogTerm(prevLogIndex) == prevLogTerm
+	if prevLogIndex > l.LastIndex() {
+		return false, l.LastIndex(), l.LastTerm()
+	}
+
+	term := l.GetLogTerm(prevLogIndex)
+
+	ok := term == prevLogTerm
+
+	if !ok {
+		// get the index of the first entry with the conflicting term
+		var i uint64
+		conflictTerm := term
+		for i = prevLogIndex - 1; i >= l.start; i-- {
+			if l.GetLogTerm(i) != conflictTerm {
+				break
+			}
+		}
+		return ok, i + 1, conflictTerm
+	}
+
+	return ok, prevLogIndex, term
+}
+
+func (l *LogEntries) GetConflictIndex(start, index uint64, term uint64) (bool, uint64) {
+	if l == nil || index > l.LastIndex() {
+		return false, 0
+	}
+
+	for i := start; i >= l.start; i-- {
+		if l.GetLogTerm(i) == term {
+			return true, i
+		}
+	}
+	return false, 0
 }
 
 // StoreEntriesFromIndex stores the entries from the given index.
